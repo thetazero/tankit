@@ -80,9 +80,12 @@ impl Chart {
         for l in &sk.lots {
             let shade = match l.kind {
                 LotKind::Distant => continue,
-                LotKind::Rubble | LotKind::Spires | LotKind::Fins | LotKind::Boulders => {
-                    grey(0.16, 0.55)
-                }
+                LotKind::Rubble
+                | LotKind::Spires
+                | LotKind::Fins
+                | LotKind::Boulders
+                | LotKind::Outcrop
+                | LotKind::Cut => grey(0.16, 0.55),
                 _ => grey(0.035, 0.95),
             };
             c.poly(&l.footprint.corners(), shade);
@@ -109,16 +112,6 @@ impl Chart {
         }
         for t in &sk.tracks {
             c.line(t, 1.1, grey(0.012, 0.9));
-        }
-        if let Some(s) = &sk.spur {
-            c.line(&s.line, 1.1, grey(0.012, 0.9));
-            let (at, along) = s.shed;
-            let half = crate::map::procgen::mine::SHED_HALF;
-            let (x, y) = (along.perp() * half.x, along * half.y);
-            c.poly(
-                &[at - x - y, at + x - y, at + x + y, at - x + y],
-                grey(0.035, 0.95),
-            );
         }
         for x in &sk.crossings {
             c.line(&[x.from, x.to], x.half, grey(0.5, 0.9));

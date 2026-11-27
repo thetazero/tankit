@@ -16,7 +16,7 @@ use crate::ai::nav::NavGrid;
 use crate::faction::Faction;
 use crate::map::noise::noise2;
 use crate::map::procgen::Centerpiece;
-use crate::map::procgen::mine::{line_at, smoothstep};
+use crate::map::procgen::mine::{cutting_rig, line_at, smoothstep};
 use crate::map::ruins::Drift;
 use crate::map::{Map, OBox, Terrain, rocks};
 use crate::render::material::Material;
@@ -24,8 +24,6 @@ use crate::rng::Rng;
 
 mod camp;
 mod town;
-#[cfg(test)]
-pub use camp::site;
 
 /// Weathered rock, on the high ground's top.
 const WEATHERED: Vec3 = Vec3::new(0.46, 0.27, 0.18);
@@ -126,7 +124,7 @@ pub fn dress(
                 Centerpiece::ShieldGenerator(owner, condition) => (owner, condition),
                 Centerpiece::Monument => (Faction::Imperium, Default::default()),
             };
-            s.generator(&mut dice(2), seed, owner, condition)
+            s.generator(&mut dice(2), owner, condition)
         }
     }
     claims.push((Claim::Landmark, start..s.map.oboxes.len()));
@@ -137,6 +135,12 @@ pub fn dress(
             LotKind::Spires => s.spires(&mut rng, lot),
             LotKind::Fins => s.fins(&mut rng, lot),
             LotKind::Boulders => s.boulder_field(&mut rng, lot),
+            LotKind::Outcrop => s.outcrop(&mut rng, lot),
+            LotKind::Cut => s.cut(&mut rng, lot),
+            LotKind::Rig => {
+                let at = lot.at();
+                cutting_rig(s.map, at, lot.footprint.yaw, s.g(at));
+            }
             // (Houses are up already.)
             _ => {}
         }
@@ -538,6 +542,35 @@ impl Sand<'_> {
             let s = rng.range(0.3, 0.7);
             self.boulder(rng, p, s, false);
         }
+    }
+
+    /// An outcrop: a rock, maybe a smaller one by it.
+    fn outcrop(&mut self, rng: &mut Rng, lot: &Lot) {
+        let size = (lot.reach() * 0.55).clamp(1.3, 1.9);
+        self.boulder(rng, lot.at(), size, true);
+        if rng.chance(0.5) {
+            let a = rng.range(0.0, TAU);
+            let q = lot.at() + Vec2::from_angle(a) * size * rng.range(1.0, 1.3);
+            let s = size * rng.range(0.55, 0.75);
+            if !self.sk.keep_clear(q) {
+                self.boulder(rng, q, s, true);
+            }
+        }
+    }
+
+    /// A cut face: a low step of dark rock.
+    fn cut(&mut self, rng: &mut Rng, lot: &Lot) {
+        let f = &lot.footprint;
+        let g = self.g(f.center);
+        let color = self.pal.stone_dark * rng.range(0.95, 1.05);
+        self.map.oboxes.push(rocks::block(
+            f.center,
+            f.yaw,
+            f.half,
+            g - 0.5,
+            g + 1.5,
+            color,
+        ));
     }
 
     /// Stones washed down the washes and left on their floors.

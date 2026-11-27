@@ -990,6 +990,39 @@ impl Land {
         self.channel.as_ref().map_or(h, |c| c.shape(p, h))
     }
 
+    /// Great rocks stood about on the high ground, apart and back from its
+    /// edges, wherever `clear` (of where, and how far round): up to `want`
+    /// in all.
+    pub fn stand_rocks(
+        &mut self,
+        rng: &mut Rng,
+        size: f32,
+        want: usize,
+        clear: impl Fn(Vec2, f32) -> bool,
+    ) {
+        for _ in 0..200 {
+            if self.towers.len() >= want {
+                break;
+            }
+            let t = Tower {
+                center: Vec2::new(rng.range(0.06, 0.94), rng.range(0.06, 0.94)) * size,
+                radius: rng.range(5.0, 11.0),
+                height: rng.range(7.0, 15.0),
+                phase: rng.range(0.0, TAU),
+            };
+            let r = t.radius * 1.25;
+            let inside =
+                t.center.min_element() > r + 8.0 && t.center.max_element() < size - r - 8.0;
+            if inside
+                && self.plateau(t.center) < -(r + 6.0)
+                && self.tower_distance(t.center) > r + 22.0
+                && clear(t.center, r)
+            {
+                self.towers.push(t);
+            }
+        }
+    }
+
     /// How far `p` is from any tower (negative inside one).
     pub fn tower_distance(&self, p: Vec2) -> f32 {
         self.towers

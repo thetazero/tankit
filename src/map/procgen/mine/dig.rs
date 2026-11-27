@@ -58,22 +58,9 @@ impl DerefMut for Dig<'_> {
 }
 
 use crate::map::procgen::crossing::Crossing;
+use crate::map::procgen::skeleton::{Lot, LotKind};
 
 impl Dig<'_> {
-    /// A block of rock, solid (see `rocks::block`).
-    pub(super) fn stone(
-        &mut self,
-        center: Vec2,
-        yaw: f32,
-        half: Vec2,
-        y0: f32,
-        y1: f32,
-        color: Vec3,
-    ) {
-        self.oboxes
-            .push(rocks::block(center, yaw, half, y0, y1, color));
-    }
-
     /// The box just placed is rock from the rocks toolkit, of this `kind`
     /// (ore heaped in a bin or a car: broken lumps, the heap a block).
     pub(super) fn last_is_rock(&mut self, kind: rocks::Kind) {
@@ -184,71 +171,6 @@ impl Dig<'_> {
                 false,
             );
         }
-    }
-
-    /// A rock about `h` high at `p`, maybe a smaller one by it, on dice of
-    /// its own.
-    pub(super) fn rock_at(&mut self, p: Vec2, h: f32) {
-        let rng = &mut own_rng(p);
-        let size = (h * 0.55).clamp(1.3, 1.9);
-        self.boulder(rng, p, size, true);
-        if rng.chance(0.5) {
-            let a = rng.range(0.0, TAU);
-            let q = p + Vec2::new(a.cos(), a.sin()) * size * rng.range(1.0, 1.3);
-            let s = size * rng.range(0.55, 0.75);
-            if self.room(q, s * 1.2 + 1.0) {
-                self.boulder(rng, q, s, true);
-            }
-        }
-    }
-
-    /// The seam: where it runs along the wash floor (on up the Crag's face,
-    /// and through the hall), worked out here: the cut faces either side,
-    /// and where it cropped out, the spots for rocks (returned: placed once
-    /// the wash's other rocks are, which keep their distance).
-    pub(super) fn seam(&mut self, rng: &mut Rng) -> Vec<(Vec2, f32)> {
-        let lay = self.l;
-        let mut rocks = Vec::new();
-        let line = lay.seam.clone();
-        if line.is_empty() {
-            return rocks;
-        }
-        // Rock along the seam on the wash floor, cover under the bridge and
-        // either side of it.
-        for (u, h) in [
-            (6.0, 3.0),
-            (18.0, 3.6),
-            (34.0, 2.6),
-            (47.0, 4.2),
-            (61.0, 3.2),
-        ] {
-            let (p, t) = line_at(&line, u);
-            let p = p + t.perp() * rng.range(-2.5, 2.5);
-            if lay
-                .crossings
-                .iter()
-                .any(|b| seg(p, b.from, b.to).0 < DECK_HALF + 2.0)
-                || !self.room(p, 2.0)
-            {
-                continue;
-            }
-            rocks.push((p, h));
-        }
-        // Cut faces: low steps of dark rock either side of the vein where
-        // the rig has cut it back.
-        for (u, side) in [(6.0, 1.0), (66.0, -1.0f32)] {
-            let (p, t) = line_at(&line, u);
-            // Toward the bank, off the way down the floor's middle.
-            let (_, half) = lay.land.wash_near(p);
-            let p = p + t.perp() * side * (half - 1.8);
-            if !self.room(p, 1.0) {
-                continue;
-            }
-            let yaw = (-t.y).atan2(t.x) + rng.range(-0.2, 0.2);
-            let g = self.ground_height(p.x, p.y);
-            self.stone(p, yaw, Vec2::new(3.2, 1.4), g - 0.5, g + 1.5, STONE_DARK);
-        }
-        rocks
     }
 
     /// The ground at a point: a dig's floor, in one.
@@ -552,23 +474,24 @@ impl Dig<'_> {
         });
     }
 
-    /// The track, from the end of the adit out across the bridge and the
-    /// flats to the south edge, and the branch off it into the warehouse:
-    /// two rails on sleepers. Visual only.
+    /// The railroads, two rails on sleepers: visual only.
     pub(super) fn railroad(&mut self) {
         let lay = self.l;
-        for line in &lay.tracks {
-            self.rails(line, false);
+        for (k, line) in lay.tracks.iter().enumerate() {
+            let off = lay.off_track(k);
+            self.rails(line, off.map(|(m, _)| &lay.tracks[m][..]));
+            if let Some((m, s)) = off {
+                self.points(&lay.tracks[m], s, line);
+            }
         }
-        // The warehouse's branch, if there's a warehouse.
-        if lay.spur.is_none() {
-            return;
-        }
-        let branch = lay.spur.as_ref().unwrap().line.clone();
-        self.rails(&branch, true);
-        // The points lever by the junction, on the outside of the curve.
-        let (j, dir) = lay.branch_from();
-        let at = j - dir * 2.0 + dir.perp() * 2.8 * lay.branch_side();
+    }
+
+    /// The points lever where `spur` leaves `main`, `s` m along it, on the
+    /// outside of the curve.
+    fn points(&mut self, main: &[Vec2], s: f32, spur: &[Vec2]) {
+        let (j, dir) = line_at(main, s);
+        let turn = (spur[spur.len() - 1] - j).dot(dir.perp()).signum();
+        let at = j - dir * 2.0 - dir.perp() * 2.8 * turn;
         let g = self.ground_height(at.x, at.y);
         self.oboxes.push(OBox {
             center: at,
@@ -593,9 +516,9 @@ impl Dig<'_> {
     }
 
     /// Rails on sleepers along `line`, following the ground (or the
-    /// bridge's deck). A branch leaves out the sleepers where the main
-    /// line's already are.
-    pub(super) fn rails(&mut self, line: &[Vec2], branch: bool) {
+    /// bridge's deck). A spur leaves out the sleepers where those of the line
+    /// it's `off` already are.
+    pub(super) fn rails(&mut self, line: &[Vec2], off: Option<&[Vec2]>) {
         let lay = self.l;
         let total = line_len(line, line.len() - 1);
         let y_at = |m: &Dig, s: f32| {
@@ -612,7 +535,7 @@ impl Dig<'_> {
         for k in 0..n {
             let s = step * (k as f32 + 0.5);
             let (p, dir) = line_at(line, s);
-            if branch && lay.main_line_distance(p) < 2.4 {
+            if off.is_some_and(|m| line_distance(m, p) < 2.4) {
                 continue;
             }
             let y = y_at(self, s);
@@ -631,7 +554,7 @@ impl Dig<'_> {
         }
         // Rails, in runs of up to 6 m following the ground, broken at the
         // line's bends.
-        let mut s = if branch { 1.0 } else { 0.0 };
+        let mut s = if off.is_some() { 1.0 } else { 0.0 };
         // (Solid ground has finer bumps than a terrain.)
         let run = if self.solid.is_some() { 2.0 } else { 6.0 };
         let bends: Vec<f32> = (1..line.len()).map(|k| line_len(line, k)).collect();
@@ -805,98 +728,6 @@ impl Dig<'_> {
                 Vec3::new(r.x, DECK_TOP - DECK_T - 0.9, r.y),
                 0.1,
                 STEEL,
-                Material::Metal,
-                false,
-            );
-        }
-    }
-
-    /// A cutting rig at `at` on ground at `floor`, its boom reaching out
-    /// along `yaw`: a painted steel body on four crawler units, a cab on
-    /// top, a toothed cutting drum at the end of the boom.
-    pub(super) fn cutting_rig(&mut self, at: Vec2, yaw: f32, floor: f32) {
-        let rig = Rig {
-            pos: Vec3::new(at.x, floor, at.y),
-            rot: Quat::from_rotation_y(yaw),
-        };
-        for (x, z) in [(-1.8, -2.2), (1.8, -2.2), (-1.8, 2.2), (1.8, 2.2)] {
-            rig.part(
-                self,
-                Vec3::new(x, 0.45, z),
-                Vec3::new(0.8, 0.3, 1.0),
-                Quat::IDENTITY,
-                STEEL,
-                Material::Metal,
-                true,
-                0.0,
-            );
-            // The crawler's track, down on the ground under it.
-            rig.part(
-                self,
-                Vec3::new(x, 0.12, z),
-                Vec3::new(0.85, 0.12, 1.05),
-                Quat::IDENTITY,
-                STEEL * 0.6,
-                Material::Metal,
-                false,
-                0.0,
-            );
-        }
-        rig.part(
-            self,
-            Vec3::new(0.0, 1.7, 0.0),
-            Vec3::new(2.2, 0.95, 3.2),
-            Quat::IDENTITY,
-            MACHINE,
-            Material::Painted,
-            true,
-            0.0,
-        );
-        rig.part(
-            self,
-            Vec3::new(0.0, 3.1, -1.6),
-            Vec3::new(1.4, 0.5, 1.2),
-            Quat::IDENTITY,
-            STEEL,
-            Material::Metal,
-            true,
-            0.0,
-        );
-        let root = Vec3::new(0.0, 2.9, 2.6);
-        let elbow = Vec3::new(0.0, 5.0, 6.0);
-        let head = Vec3::new(0.0, 1.2, 8.5);
-        for x in [-0.6, 0.6] {
-            let o = Vec3::new(x, 0.0, 0.0);
-            self.segment(
-                rig.point(root + o),
-                rig.point(elbow + o),
-                0.28,
-                STEEL,
-                Material::Metal,
-                false,
-            );
-            self.segment(
-                rig.point(elbow + o),
-                rig.point(head + o),
-                0.24,
-                STEEL,
-                Material::Metal,
-                false,
-            );
-        }
-        let hc = rig.point(head);
-        let axle = rig.rot * Vec3::X * 0.35;
-        self.disc(hc, axle, 1.3, STEEL * 1.2, Material::Metal);
-        self.disc(hc, axle * 1.25, 0.6, RUST, Material::Rust);
-        // Picks round the drum.
-        for k in 0..10 {
-            let a = k as f32 * TAU / 10.0;
-            let out = rig.rot * Vec3::new(0.0, a.cos(), a.sin());
-            self.segment(
-                hc + out * 1.2,
-                hc + out * 1.55,
-                0.09,
-                STEEL * 0.7,
                 Material::Metal,
                 false,
             );
@@ -1138,14 +969,11 @@ impl Dig<'_> {
             .extend(m.indices.iter().map(|i| i + base));
     }
 
-    /// The ore train, stopped on the flats headed out: the locomotive, two
-    /// ore cars behind it under the tipple. Far down the line, two cars off
-    /// the rails, one on its side, its load spilled out of it.
-    /// Ore cars under and past the tipple `s0` m along the first track, then
+    /// Ore cars under and past the tipple `s0` m along `track`, then
     /// the loco ahead.
-    pub(super) fn loaded_train(&mut self, s0: f32) {
+    pub(super) fn loaded_train(&mut self, track: &[Vec2], s0: f32) {
         for (s, loco) in [(s0, false), (s0 + 10.0, false), (s0 + 22.0, true)] {
-            let (p, dir) = self.l.track_at(s);
+            let (p, dir) = line_at(track, s);
             self.rail_car(p, yaw_along(dir), 0.0, loco);
         }
     }
@@ -1432,9 +1260,11 @@ impl Dig<'_> {
         // to its head over the heap.
         // (None without a wash under the Face to work.)
         // (None to a rig too far off for one.)
-        let Some((rig_at, rig_yaw)) = lay.wash_rig.filter(|r| r.0.distance(at) < 60.0) else {
+        let mut rigs = lay.lots_of(LotKind::Rig);
+        let Some(digger) = rigs.find(|r| r.at().distance(at) < 60.0) else {
             return;
         };
+        let (rig_at, rig_yaw) = (digger.at(), digger.footprint.yaw);
         let boom = Vec2::new(rig_yaw.sin(), rig_yaw.cos());
         let toward = (at - rig_at).normalize();
         let foot = rig_at + boom * 4.0 + toward * 3.5;
@@ -1613,13 +1443,10 @@ impl Dig<'_> {
     /// enough to drive through. Open-top bins of crystal-rich ore stand
     /// along both walls, a hopper at the buffer stop. Only the plasma lamps,
     /// and the emblem small on the front, say whose it is.
-    pub(super) fn warehouse(&mut self, rng: &mut Rng) {
-        let lay = self.l;
+    pub(super) fn warehouse(&mut self, rng: &mut Rng, lot: &Lot) {
         let st = self.st;
-        if lay.spur.is_none() {
-            return;
-        }
-        let (at, along) = lay.shed();
+        let at = lot.at();
+        let along = lot.footprint.axes().1;
         let g = self.ground_height(at.x, at.y);
         let yaw = yaw_along(along);
         let rig = Rig {
@@ -2076,6 +1903,98 @@ impl Dig<'_> {
             .flatten()
             .any(|w| Vec2::new(w.x, w.z).distance(q) < 4.5)
             || self.hold_site.is_some_and(|h| h.distance(q) < 7.0)
+    }
+}
+
+/// A cutting rig at `at` on ground at `floor`, its boom reaching out
+/// along `yaw`: a painted steel body on four crawler units, a cab on
+/// top, a toothed cutting drum at the end of the boom.
+pub(in crate::map::procgen) fn cutting_rig(map: &mut Map, at: Vec2, yaw: f32, floor: f32) {
+    let rig = Rig {
+        pos: Vec3::new(at.x, floor, at.y),
+        rot: Quat::from_rotation_y(yaw),
+    };
+    for (x, z) in [(-1.8, -2.2), (1.8, -2.2), (-1.8, 2.2), (1.8, 2.2)] {
+        rig.part(
+            map,
+            Vec3::new(x, 0.45, z),
+            Vec3::new(0.8, 0.3, 1.0),
+            Quat::IDENTITY,
+            STEEL,
+            Material::Metal,
+            true,
+            0.0,
+        );
+        // The crawler's track, down on the ground under it.
+        rig.part(
+            map,
+            Vec3::new(x, 0.12, z),
+            Vec3::new(0.85, 0.12, 1.05),
+            Quat::IDENTITY,
+            STEEL * 0.6,
+            Material::Metal,
+            false,
+            0.0,
+        );
+    }
+    rig.part(
+        map,
+        Vec3::new(0.0, 1.7, 0.0),
+        Vec3::new(2.2, 0.95, 3.2),
+        Quat::IDENTITY,
+        MACHINE,
+        Material::Painted,
+        true,
+        0.0,
+    );
+    rig.part(
+        map,
+        Vec3::new(0.0, 3.1, -1.6),
+        Vec3::new(1.4, 0.5, 1.2),
+        Quat::IDENTITY,
+        STEEL,
+        Material::Metal,
+        true,
+        0.0,
+    );
+    let root = Vec3::new(0.0, 2.9, 2.6);
+    let elbow = Vec3::new(0.0, 5.0, 6.0);
+    let head = Vec3::new(0.0, 1.2, 8.5);
+    for x in [-0.6, 0.6] {
+        let o = Vec3::new(x, 0.0, 0.0);
+        map.segment(
+            rig.point(root + o),
+            rig.point(elbow + o),
+            0.28,
+            STEEL,
+            Material::Metal,
+            false,
+        );
+        map.segment(
+            rig.point(elbow + o),
+            rig.point(head + o),
+            0.24,
+            STEEL,
+            Material::Metal,
+            false,
+        );
+    }
+    let hc = rig.point(head);
+    let axle = rig.rot * Vec3::X * 0.35;
+    map.disc(hc, axle, 1.3, STEEL * 1.2, Material::Metal);
+    map.disc(hc, axle * 1.25, 0.6, RUST, Material::Rust);
+    // Picks round the drum.
+    for k in 0..10 {
+        let a = k as f32 * TAU / 10.0;
+        let out = rig.rot * Vec3::new(0.0, a.cos(), a.sin());
+        map.segment(
+            hc + out * 1.2,
+            hc + out * 1.55,
+            0.09,
+            STEEL * 0.7,
+            Material::Metal,
+            false,
+        );
     }
 }
 

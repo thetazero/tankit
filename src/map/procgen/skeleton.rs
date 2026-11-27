@@ -53,18 +53,10 @@ pub struct Skeleton {
     pub rills: Vec<super::rill::Rill>,
     /// Where roads cross valleys and ridges, and railroads washes.
     pub crossings: Vec<super::crossing::Crossing>,
-    /// Railroads.
+    /// Railroads; one that starts on another's a spur off it.
     pub tracks: Vec<Vec<Vec2>>,
     /// Where each side's Raid stand is wanted.
     pub stands: Vec<Vec2>,
-    /// A railroad's spur to a warehouse.
-    pub spur: Option<Spur>,
-    /// Where its trains are loaded: how far along the first track.
-    pub loading: Option<f32>,
-    /// A seam of crystal's line, and the rig cutting it (where, which way
-    /// its boom reaches).
-    pub seam: Vec<Vec2>,
-    pub wash_rig: Option<(Vec2, f32)>,
 }
 
 /// Raised ground: a rounded square, flat on top, sloping down over `ramp`
@@ -204,18 +196,6 @@ pub struct Base {
     pub kind: BaseKind,
 }
 
-/// A spur off the first track to a warehouse: it leaves the track
-/// `junction` m along it, to the left of the way out (`side` 1) or the right
-/// (-1).
-#[derive(Clone, Debug)]
-pub struct Spur {
-    pub line: Vec<Vec2>,
-    pub junction: f32,
-    pub side: f32,
-    /// The warehouse's middle, and its way along (from the rail door in).
-    pub shed: (Vec2, Vec2),
-}
-
 /// What a base is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BaseKind {
@@ -297,6 +277,17 @@ pub enum LotKind {
     Fins,
     /// A field of boulders.
     Boulders,
+    /// A rock or two, cover on its own.
+    Outcrop,
+    /// A low face where rock's been cut back, along its footprint.
+    Cut,
+    /// A machine at work in the open, reaching out the way it's turned.
+    Rig,
+    /// A shed at a track's end, driven through: a door in each side, the
+    /// rails in by its front.
+    Warehouse,
+    /// What loads trains, standing over a track that runs along it.
+    Loader,
     /// Part of a works.
     Works(super::foundry::Part),
 }
@@ -322,6 +313,13 @@ impl Lot {
             front: (1, 1.0),
             kind,
         }
+    }
+
+    /// The same, turned to `yaw`.
+    pub fn turned(kind: LotKind, at: Vec2, reach: f32, yaw: f32) -> Lot {
+        let mut lot = Lot::round(kind, at, reach);
+        lot.footprint.yaw = yaw;
+        lot
     }
 
     pub fn at(&self) -> Vec2 {
@@ -651,10 +649,10 @@ impl Skeleton {
         ground.rock = Vec3::new(0.55, 0.45, 0.35);
         map.solid = Some(ground.into());
         // The landmark: a ring wall, open at its doors and where it fell;
-        // anything else, a low slab on its reach.
+        // anything without doors, a low slab on its reach.
         for lm in &self.landmarks {
             let g = self.ground(lm.center);
-            if !matches!(lm.kind, LandmarkKind::Great(_)) {
+            if !matches!(lm.kind, LandmarkKind::Great(_)) && lm.doors.is_empty() {
                 put(
                     &mut map,
                     lm.center,
@@ -729,7 +727,11 @@ impl Skeleton {
                 LotKind::Distant => (16.0, Vec3::new(0.38, 0.38, 0.4)),
                 LotKind::Spires => (0.3, Vec3::new(0.6, 0.5, 0.2)),
                 LotKind::Fins => (0.3, Vec3::new(0.3, 0.5, 0.6)),
-                LotKind::Boulders => (0.3, Vec3::new(0.4, 0.6, 0.3)),
+                LotKind::Boulders | LotKind::Outcrop => (0.3, Vec3::new(0.4, 0.6, 0.3)),
+                LotKind::Cut => (0.3, Vec3::new(0.3, 0.5, 0.6)),
+                LotKind::Rig => (2.0, Vec3::new(0.7, 0.55, 0.2)),
+                LotKind::Warehouse => (0.3, Vec3::new(0.55, 0.5, 0.45)),
+                LotKind::Loader => (0.3, Vec3::new(0.7, 0.4, 0.2)),
             };
             match lot.kind {
                 LotKind::Raised => {
@@ -754,7 +756,12 @@ impl Skeleton {
                 | LotKind::Civic(_)
                 | LotKind::Spires
                 | LotKind::Fins
-                | LotKind::Boulders => {
+                | LotKind::Boulders
+                | LotKind::Outcrop
+                | LotKind::Cut
+                | LotKind::Rig
+                | LotKind::Warehouse
+                | LotKind::Loader => {
                     put(&mut map, f.center, f.yaw, f.half, (0.0, h), c);
                     map.oboxes.last_mut().unwrap().solid = false;
                 }

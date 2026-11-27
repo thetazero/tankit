@@ -391,15 +391,15 @@ fn cross(land: &mut Land, wash: &Wash, tracks: &[Vec<Vec2>], size: f32) -> Optio
     Some(over)
 }
 
-/// A warehouse on a spur off the first track, and where along the track its
-/// trains load, wherever there's room for each.
+/// A spur off the first track with a warehouse at its end, and what loads
+/// the track's trains, wherever there's room for each.
 fn works(
     rng: &mut Rng,
     land: &mut Land,
     tracks: &[Vec<Vec2>],
     crossings: &[Crossing],
     size: f32,
-) -> (Option<Spur>, Option<f32>) {
+) -> (Option<(Vec<Vec2>, Lot)>, Option<Lot>) {
     let Some(track) = tracks.first() else {
         return (None, None);
     };
@@ -409,9 +409,9 @@ fn works(
         let (p, _) = line_at(track, s);
         crossings.iter().all(|x| x.distance(p) > r)
     };
-    let fits = |s: &Spur| {
-        let (at, along) = s.shed;
-        let across = along.perp();
+    let fits = |shed: &Lot| {
+        let at = shed.at();
+        let (across, along) = shed.footprint.axes();
         let n = 6;
         (0..=n).all(|i| {
             (0..=n).all(|k| {
@@ -440,12 +440,15 @@ fn works(
     let mut spur = None;
     while spur.is_none() && !spots.is_empty() {
         let (s, side) = spots.swap_remove(rng.index(spots.len()));
-        spur = Some(super::works::spur(track, s, side)).filter(|s| fits(s));
+        let made = super::works::spur(track, s, side);
+        if fits(&made.1) {
+            spur = Some((s, made));
+        }
     }
-    if let Some(s) = &spur {
+    if let Some((_, (line, shed))) = &spur {
         let dunes = land.dunes.as_mut().unwrap();
-        dunes.calm.push((s.shed.0, 30.0, 44.0));
-        for p in &s.line {
+        dunes.calm.push((shed.at(), 30.0, 44.0));
+        for p in line {
             dunes.calm.push((*p, 7.0, 16.0));
         }
     }
@@ -458,13 +461,16 @@ fn works(
             .all(|d| off_bridges(s + d, 10.0))
             && spur
                 .as_ref()
-                .is_none_or(|j| !(s - 24.0..s + 50.0).contains(&j.junction));
+                .is_none_or(|(junction, _)| !(s - 24.0..s + 50.0).contains(junction));
         if clear {
-            loading = Some(s);
+            let (p, dir) = line_at(track, s);
+            let mut lot = Lot::turned(LotKind::Loader, p, 4.2, dir.x.atan2(dir.y));
+            lot.footprint.half.y = 6.0;
+            loading = Some(lot);
         }
         s += 4.0;
     }
-    (spur, loading)
+    (spur.map(|(_, made)| made), loading)
 }
 
 /// Whether some dig's a way from `a` to `b`: not much longer than straight
@@ -813,23 +819,8 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
     }
 
     // Lesser rocks standing about on the top.
-    let mut tries = 0;
     let want = land.towers.len() + rng.int(3, 6) as usize;
-    while land.towers.len() < want && tries < 200 {
-        tries += 1;
-        let t = Tower {
-            center: Vec2::new(rng.range(0.06, 0.94), rng.range(0.06, 0.94)) * size,
-            radius: rng.range(5.0, 11.0),
-            height: rng.range(7.0, 15.0),
-            phase: rng.range(0.0, TAU),
-        };
-        let r = t.radius * 1.25;
-        let inside = t.center.min_element() > r + 8.0 && t.center.max_element() < size - r - 8.0;
-        if inside && land.plateau(t.center) < -(r + 6.0) && land.tower_distance(t.center) > r + 22.0
-        {
-            land.towers.push(t);
-        }
-    }
+    land.stand_rocks(rng, size, want, |_, _| true);
 
     let (spur, loading) = works(rng, &mut land, &tracks, &crossings, size);
 
@@ -847,7 +838,7 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
             && tracks.iter().all(|t| line_distance(t, m.at) > reach + 4.0)
             && spur
                 .as_ref()
-                .is_none_or(|s| s.shed.0.distance(m.at) > reach + 34.0)
+                .is_none_or(|(_, shed)| shed.at().distance(m.at) > reach + 34.0)
             && land
                 .digs
                 .iter()
@@ -893,7 +884,7 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
                     && land.tower_distance(q) > RAMP_HALF + 8.0
                     && spur
                         .as_ref()
-                        .is_none_or(|s| s.shed.0.distance(q) > RAMP_HALF + 30.0)
+                        .is_none_or(|(_, shed)| shed.at().distance(q) > RAMP_HALF + 30.0)
             });
         if inside && clear {
             land.high.ramps.push(ramp);
@@ -929,10 +920,13 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
         pad: PAD,
         tracks,
         crossings,
-        spur,
-        loading,
+        lots: loading.into_iter().collect(),
         ..Skeleton::default()
     };
+    if let Some((line, shed)) = spur {
+        sk.tracks.push(line);
+        sk.lots.push(shed);
+    }
     if sk.shed_distance(heart) < 16.0 {
         return Err("the Hold site's by the warehouse".into());
     }
@@ -946,33 +940,7 @@ fn draw(rng: &mut Rng, sides: &[Faction], wet: bool, must: bool) -> Result<Skele
         return Err("no room to spawn apart".into());
     }
     sk.place_lots(rng, Form::Escarpment);
-    // The seam along a wash's floor, a rig cutting it, off the bridges and
-    // the fords.
-    if let Some(w) = sk.land.washes.first() {
-        let (lo, hi) = w.inside(size);
-        let mut s = lo + 30.0;
-        while s < hi - 30.0 {
-            let (p, way, n) = w.frame(s);
-            let clear = sk.crossings.iter().all(|x| x.distance(p) > 14.0)
-                && sk
-                    .land
-                    .fords
-                    .iter()
-                    .all(|&(a, b, h)| crate::map::procgen::mine::seg(p, a, b).0 > h + 9.0);
-            if clear {
-                sk.seam = (0..=20)
-                    .map(|k| {
-                        let u = s - 30.0 + 3.0 * k as f32;
-                        let (p, _, n) = w.frame(u);
-                        p + n * (1.6 * (u * 0.21).sin() - 1.0)
-                    })
-                    .collect();
-                sk.wash_rig = Some((p - n * 3.5, way.x.atan2(way.y)));
-                break;
-            }
-            s += 4.0;
-        }
-    }
+    sk.work_wash(rng);
     sk.stands = sk
         .base_spots()
         .iter()
@@ -1114,5 +1082,41 @@ mod tests {
             let b = sk.base_spots();
             assert!(served(&sk.land.digs, b[0], b[1]), "seed {seed}: {b:?}");
         }
+    }
+
+    /// A spur's a track that leaves another, with its warehouse at its end,
+    /// and trains load on a track.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn spurs_lead_to_warehouses() {
+        let sides = [Faction::Ithessar, Faction::Resonant];
+        let (mut sheds, mut loaders, mut rigs, mut rocks) = (0, 0, 0, 0);
+        for seed in 0..8 {
+            let sk = skeleton(seed, &sides);
+            let spurs: Vec<usize> = (0..sk.tracks.len())
+                .filter(|&k| sk.off_track(k).is_some())
+                .collect();
+            assert_eq!(
+                spurs.len(),
+                sk.lots_of(LotKind::Warehouse).count(),
+                "seed {seed}"
+            );
+            for k in spurs {
+                let end = *sk.tracks[k].last().unwrap();
+                assert!(sk.shed_distance(end) <= 0.0, "seed {seed}: {end}");
+                sheds += 1;
+            }
+            for l in sk.lots_of(LotKind::Loader) {
+                assert!(sk.track_distance(l.at()) < 0.1, "seed {seed}");
+                loaders += 1;
+            }
+            rigs += sk.lots_of(LotKind::Rig).count();
+            rocks += sk.land.towers.len();
+        }
+        println!("{sheds} sheds, {loaders} loaders, {rigs} rigs, {rocks} rocks");
+        assert!(sheds > 0 && loaders > 0 && rigs > 0 && rocks > 0);
     }
 }
