@@ -17,14 +17,17 @@
 //! from the break, as far as the repairs have got (`Condition::Down`'s
 //! `done` of `of`): scaffolding round it up to there, a tower crane over
 //! it lifting the next piece in, work lights, parts stacked by the crane.
+//! The scaffolding keeps to the plinth and the crane stands outside the Hold
+//! ring, so the fight has the same ground as round a generator that's up.
 //! Still dark: it's not up until it's done.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 use glam::{EulerRot, Quat, Vec2, Vec3};
 
 use super::{PLINTH_R, angle, between_doors, dir, shelled};
 use crate::faction::Faction;
+use crate::hold;
 use crate::map::procgen::skeleton::Landmark;
 use crate::map::{Ambient, Crystal, Map, OBox, rocks};
 use crate::render::PointLight;
@@ -145,6 +148,11 @@ const SCORCHED: Vec3 = Vec3::new(0.05, 0.05, 0.055);
 /// The scaffolding's tubes.
 const TUBE: Vec3 = Vec3::new(0.5, 0.5, 0.48);
 const BOARD: Vec3 = Vec3::new(0.46, 0.36, 0.24);
+/// How far the scaffold's outer tubes stand off its inner ones.
+const SCAFFOLD_DEPTH: f32 = 1.0;
+/// Half across the crane's pad, and the room it and its parts want.
+const CRANE_PAD: f32 = 1.6;
+const CRANE_ROOM: f32 = 4.6;
 /// The crane's paint.
 const CRANE: Vec3 = Vec3::new(0.8, 0.58, 0.1);
 /// Work lights: sodium-warm.
@@ -326,17 +334,17 @@ pub(in crate::map::procgen) fn ruin(
         let r = map.oboxes[mark.oboxes..]
             .iter()
             .filter(|o| o.center.distance(c) < core_r && span_y(o).1 > base + 1.6)
-            .map(|o| o.center.distance(c) + o.half.max_element())
+            .flat_map(|o| o.shadow())
+            .map(|p| p.distance(c))
             .fold(2.5f32, f32::max)
-            .min(PLINTH_R + 1.0)
-            + 0.6;
-        map.scaffold(lm, base, r, standing + 1.5);
-        let away = between_doors(lm)
-            .into_iter()
-            .filter(|&a| !shelled(lm, a))
-            .max_by(|&a, &b| (-dir(a).dot(fall)).total_cmp(&(-dir(b).dot(fall))))
-            .unwrap_or(angle(-fall));
-        let foot = c + dir(away) * (r + 4.2);
+            + 0.35;
+        map.scaffold(
+            lm,
+            base,
+            r.min(PLINTH_R - SCAFFOLD_DEPTH - 0.1),
+            standing + 1.5,
+        );
+        let foot = crane_foot(map, lm, base, mark, fall);
         map.crane(
             rng,
             lm,
@@ -351,6 +359,52 @@ pub(in crate::map::procgen) fn ruin(
         map.wreckage(rng, lm, base, &w);
         map.sound(Ambient::Hull, Vec3::new(c.x, cut, c.y));
     }
+}
+
+/// Where the crane stands: outside the Hold ring and inside the landmark's
+/// wall, clear of its plant and ways in with room for the parts stacked by
+/// it, as near away from `fall` as there's room.
+fn crane_foot(map: &Map, lm: &Landmark, base: f32, mark: &Mark, fall: Vec2) -> Vec2 {
+    let standing: Vec<&OBox> = map.oboxes[mark.oboxes..]
+        .iter()
+        .filter(|o| o.solid && span_y(o).0 < base + 4.0 && span_y(o).1 > base + 0.3)
+        .collect();
+    // How far from anything, as far as it needs.
+    let room = |p: Vec2| {
+        let boxes = standing.iter().map(|o| o.distance(p));
+        let crystals = map.crystals[mark.crystals..].iter();
+        let doors = lm.doors.iter().filter_map(|&d| {
+            let q = p - lm.center;
+            (q.dot(d) > 0.0).then(|| q.perp_dot(d).abs() - 5.0)
+        });
+        boxes
+            .chain(crystals.filter(|c| c.solid).map(|c| c.distance(p)))
+            .chain(doors)
+            .fold(CRANE_ROOM, f32::min)
+    };
+    let away = angle(-fall);
+    let nearest = hold::RADIUS + CRANE_PAD * 1.5;
+    let n = 72;
+    let mut best = (f32::MIN, lm.center - fall * nearest);
+    let mut d = nearest;
+    while d < (lm.radius - 3.0).max(nearest + 0.1) {
+        for k in 0..n {
+            // From straight away from the fall, round both ways.
+            let turn = (k + 1) / 2;
+            let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let a = away + side * turn as f32 / n as f32 * TAU;
+            if shelled(lm, a) {
+                continue;
+            }
+            let p = lm.center + dir(a) * d;
+            let score = room(p) - turn as f32 * 0.01;
+            if score > best.0 {
+                best = (score, p);
+            }
+        }
+        d += 0.5;
+    }
+    best.1
 }
 
 /// What stood over the break falls together toward `fall`, about the
@@ -489,16 +543,16 @@ impl Map {
     /// every other lift, up to `top`; work lights on its top lift.
     fn scaffold(&mut self, lm: &Landmark, base: f32, r: f32, top: f32) {
         let c = lm.center;
-        let n = 8;
-        let depth = 1.4;
+        // Posts close enough that no tank fits between them.
+        let n = 12;
+        let depth = SCAFFOLD_DEPTH;
         let lift = 2.2;
         let lifts = ((top - base) / lift).ceil().max(2.0) as usize;
         let h = base + lifts as f32 * lift;
-        let corner =
-            |i: usize, r: f32| c + dir((i % n) as f32 / n as f32 * TAU + PI / n as f32) * r;
+        let corner = |i: usize, r: f32| c + dir((i % n) as f32 / n as f32 * TAU) * r;
         let at = |p: Vec2, y: f32| Vec3::new(p.x, y, p.y);
         let tube =
-            |m: &mut Map, a: Vec3, b: Vec3| m.segment(a, b, 0.055, TUBE, Material::Metal, false);
+            |m: &mut Map, a: Vec3, b: Vec3| m.segment(a, b, 0.055, TUBE, Material::Metal, true);
         for i in 0..n {
             for rr in [r, r + depth] {
                 let p = corner(i, rr);
@@ -535,7 +589,7 @@ impl Map {
                         (y + 0.07, y + 0.12),
                         BOARD,
                         Material::Wood,
-                        false,
+                        true,
                     );
                 }
             }
@@ -549,6 +603,18 @@ impl Map {
                 at(corner(i + 1, r + depth), y),
             );
         }
+        // Inside the plinth: some models' feet are too low, and what stands
+        // on them too high, for bots to know they can't drive in there.
+        self.block(
+            c,
+            Vec2::splat(2.0),
+            0.0,
+            (base, base + 1.0),
+            TUBE,
+            Material::Concrete,
+            true,
+        )
+        .hidden = true;
         // Work lights on the top lift, turned in on the job.
         for i in (0..n).step_by(3) {
             let p = corner(i, r + depth);
@@ -589,12 +655,12 @@ impl Map {
         let side = to.perp();
         let at = |p: Vec2, y: f32| Vec3::new(p.x, y, p.y);
         let chord = |m: &mut Map, a: Vec3, b: Vec3, r: f32| {
-            m.segment(a, b, r, CRANE, Material::Painted, false)
+            m.segment(a, b, r, CRANE, Material::Painted, true)
         };
         // Its foot: a concrete pad.
         self.block(
             foot,
-            Vec2::splat(1.6),
+            Vec2::splat(CRANE_PAD),
             -angle(to),
             (base - 0.2, base + 0.8),
             Vec3::splat(0.5),
@@ -628,7 +694,7 @@ impl Map {
             (height, height + 0.6),
             CRANE * 0.8,
             Material::Painted,
-            false,
+            true,
         );
         let cab = foot + side * 1.5 + to * 0.6;
         self.block(
@@ -638,7 +704,7 @@ impl Map {
             (height + 0.6, height + 2.4),
             CRANE,
             Material::Painted,
-            false,
+            true,
         );
         // The jib out over the middle, and the counter-jib behind.
         let jib = foot.distance(c) + 10.0;
@@ -685,7 +751,7 @@ impl Map {
             (top - 2.2, top),
             Vec3::splat(0.42),
             Material::Concrete,
-            false,
+            true,
         );
         // The cat head, and its ties out to both ends.
         let apex = at(foot, top + 5.0);
@@ -713,7 +779,7 @@ impl Map {
             (top - 0.5, top),
             CRANE * 0.7,
             Material::Painted,
-            false,
+            true,
         );
         let hang = hook + 2.6;
         for s in [-0.2f32, 0.2] {
@@ -733,7 +799,7 @@ impl Map {
             (hang, hang + 0.6),
             CRANE,
             Material::Painted,
-            false,
+            true,
         );
         let yaw = rng.range(0.0, TAU);
         for s in [-1.0f32, 1.0] {
@@ -754,7 +820,7 @@ impl Map {
             (hook - 0.7, hook + 0.9),
             part,
             Material::Metal,
-            false,
+            true,
         )
         .chip = 0.05;
         // Parts stacked by its foot, waiting to go up.
@@ -770,7 +836,7 @@ impl Map {
                 (y0, y0 + s * 1.3),
                 part * rng.range(0.85, 1.1),
                 Material::Metal,
-                false,
+                true,
             )
             .chip = 0.04;
         }
@@ -781,7 +847,7 @@ impl Map {
             0.06,
             TUBE,
             Material::Metal,
-            false,
+            true,
         );
         self.lights.push(PointLight {
             pos: lamp,
@@ -837,5 +903,47 @@ mod tests {
         assert!((span_y(&lo).1 - span_y(&hi).0).abs() < 0.7);
         assert!(span_y(&lo).0 < span_y(&hi).0);
         assert!((halves(&lo).z + halves(&hi).z - 6.0).abs() < 1e-4);
+    }
+
+    /// A generator being repaired leaves as much of the Hold ring to drive
+    /// as one that's up, and nothing of its scaffold can be driven through.
+    #[test]
+    fn repairs_keep_out_of_the_hold_ring() {
+        use crate::map::procgen::{Look, build, skeleton};
+        for owner in [
+            Faction::Imperium,
+            Faction::Resonant,
+            Faction::Uthenn,
+            Faction::Ithessar,
+        ] {
+            let spec = |condition| {
+                crate::shield_spec(2, Look::Imperium, crate::Generator { owner, condition })
+            };
+            let up = spec(Condition::Up);
+            let lm = skeleton(&up).landmarks[0].clone();
+            let open = |m: &Map| {
+                let mut n = 0;
+                for k in 0..120 {
+                    let mut r = PLINTH_R + 0.6;
+                    while r < hold::RADIUS {
+                        let p = lm.center + dir(k as f32 / 120.0 * TAU) * r;
+                        let g = m.ground_height(p.x, p.y);
+                        n += !m.oboxes.iter().any(|o| {
+                            let (y0, y1) = span_y(o);
+                            o.solid && y0 < g + 3.0 && y1 > g + 0.4 && o.distance(p) < 0.5
+                        }) as u32;
+                        r += 0.5;
+                    }
+                }
+                n
+            };
+            let (whole, _) = build(&up);
+            let (mending, _) = build(&spec(Condition::DAMAGED));
+            assert!(open(&mending) >= open(&whole), "{owner:?}");
+            for m in &mending.oboxes {
+                let tube = m.color == TUBE || m.color == BOARD || m.color == CRANE;
+                assert!(m.solid || !tube, "{owner:?}: {m:?}");
+            }
+        }
     }
 }
