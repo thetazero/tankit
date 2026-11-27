@@ -96,6 +96,10 @@ pub struct Rock {
 /// Lattice spacing, m: about this far apart over a face.
 const CELL: f32 = 0.7;
 
+/// A rock reaching more than this to the side of its middle, m, is scenery:
+/// none tanks fight round are so wide.
+const HUGE: f32 = 8.0;
+
 /// The surface: welded points (rock frame), and triangles facing out.
 struct Surface {
     pos: Vec<Vec3>,
@@ -173,6 +177,11 @@ impl Rock {
             Kind::Rubble => small * (0.06 + 0.06 * rng.f()),
         };
         let core = h - Vec3::splat(r);
+        // A horizon's rock is cut straight in toward its middle, so that
+        // however its cuts meet, its surface can't fold over itself (and
+        // z-fight). The rest are cut square to each face, which keeps the
+        // surface closer to its hull, what they collide as.
+        let huge = h.x.max(h.z) > HUGE;
         // Fracture faces, in the box's unit frame: a normal, and how far out
         // along it the rock is cut.
         let mut cuts: Vec<(Vec3, f32, f32)> = Vec::new();
@@ -284,8 +293,13 @@ impl Rock {
                     u.z *= narrow;
                     let mut cut = 0.0f32;
                     for &(cn, d, w) in &cuts {
-                        let e = soft_excess(u.dot(cn) - d, w);
-                        u -= cn * e;
+                        let out = u.dot(cn);
+                        let e = soft_excess(out - d, w);
+                        if huge && e > 0.0 {
+                            u *= (out - e) / out;
+                        } else {
+                            u -= cn * e;
+                        }
                         cut = cut.max((e / w).min(1.0));
                     }
                     let p = u * h;
@@ -552,6 +566,35 @@ mod tests {
                     vol > lo * full && vol < hi * full,
                     "{kind:?}: {vol:.2} m³ of a {full:.2} m³ box"
                 );
+            }
+        }
+    }
+
+    /// A horizon's rock never folds back over itself: no two triangles
+    /// sharing an edge face nearly opposite ways (#701: undersides and tops
+    /// did, and z-fought).
+    #[test]
+    fn a_huge_rock_doesnt_fold_over_itself() {
+        for key in 0..60u32 {
+            let w = 10.0 + (key % 21) as f32;
+            let half = Vec3::new(w, 6.0 + (key % 15) as f32, w * 0.7);
+            for kind in [Kind::Boulder, Kind::Block, Kind::Rubble] {
+                let s = rock(kind, half, key * 7919 + 1).surface();
+                let mut sides = HashMap::new();
+                for t in &s.tris {
+                    let p = t.map(|v| s.pos[v as usize]);
+                    let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
+                    for e in 0..3 {
+                        sides.insert((t[e], t[(e + 1) % 3]), n);
+                    }
+                }
+                for (&(a, b), n) in &sides {
+                    assert!(
+                        n.dot(sides[&(b, a)]) > -0.9,
+                        "{kind:?} {half} key {key}: folds at {}",
+                        s.pos[a as usize]
+                    );
+                }
             }
         }
     }

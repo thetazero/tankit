@@ -37,6 +37,7 @@ mod ithessar;
 pub mod land;
 pub mod memo;
 pub mod mine;
+mod rails;
 mod resonant;
 mod rill;
 pub mod setting;

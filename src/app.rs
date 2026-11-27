@@ -539,7 +539,7 @@ impl ApplicationHandler for App {
                 };
                 self.garage.scroll(-lines * 60.0);
             }
-            // The board of work scrolls (#454).
+            // The board of work scrolls (#454), and a contract's fights (#693).
             WindowEvent::MouseWheel { delta, .. } if self.mode == Mode::Menu => {
                 self.wheel += match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
