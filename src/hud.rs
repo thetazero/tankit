@@ -472,24 +472,6 @@ impl Hud {
             );
         }
 
-        // Burning in a plasma river: say so, or it just looks like dying.
-        if me.in_plasma.is_some() && !board && m.phase == Phase::Playing {
-            let c = Vec2::new(w * 0.5, h * 0.66);
-            p.set_halo(None);
-            plate(&mut p, c - Vec2::X * 145.0, Vec2::new(290.0, 46.0), 1.0);
-            let mut big = hud_text(18.0);
-            let pulse = 0.5 + 0.5 * (m.world.time * 9.0).sin();
-            big.color = with_alpha(theme::HOT, 0.65 + 0.35 * pulse);
-            p.text(c, "HULL BURNING", &big, Align::Center);
-            small(
-                &mut p,
-                c + Vec2::new(0.0, 30.0),
-                "SUNK IN A PLASMA RIVER",
-                Align::Center,
-            );
-            p.set_halo(outline);
-        }
-
         // Death screen.
         if !me.alive && m.phase == Phase::Playing {
             p.set_halo(None);
