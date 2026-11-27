@@ -22,6 +22,7 @@
 //! `land`'s landforms, the rest in shared placeholders.
 
 mod banks;
+mod bridge;
 pub mod channel;
 pub mod check;
 pub mod city;
@@ -327,7 +328,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
         claims.push((Claim::Deco(k), start..map.oboxes.len()));
     }
     for c in &sk.crossings {
-        c.build(&mut map, st.stone(), |p| sk.ground(p));
+        c.build(&mut map, st.stone(), Some(spec.look), |p| sk.ground(p));
     }
     if let Some(c) = &sk.land.channel {
         c.build(&mut map, sk.size);

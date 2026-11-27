@@ -707,7 +707,7 @@ impl Skeleton {
             map.rivers = std::sync::Arc::new(vec![c.river()]);
         }
         for c in &self.crossings {
-            c.build(&mut map, stone, |p| self.ground(p));
+            c.build(&mut map, stone, None, |p| self.ground(p));
         }
         self.lay_rails(&mut map);
         for lot in &self.lots {
