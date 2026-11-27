@@ -110,28 +110,13 @@ impl Skeleton {
             put(kind, line.to_vec());
         }
         for d in &self.land.digs {
-            // In at one mouth, through the hall, out at the other.
-            let (Some(near), Some(far), Some(hall)) =
-                (d.rooms.first(), d.rooms.get(1), d.rooms.get(2))
-            else {
-                continue;
-            };
-            // (In front of the pillars.)
-            let y = hall.min.y + (hall.max.y - hall.min.y) * 0.25;
-            let x0 = (near.min.x + near.max.x) * 0.5;
-            let x1 = (far.min.x + far.max.x) * 0.5;
-            let line = [
-                (x0, -12.0),
-                (x0, 8.0),
-                (x0, y),
-                ((x0 + x1) * 0.5, y),
-                (x1, y),
-                (x1, 8.0),
-                (x1, -12.0),
-            ]
-            .map(|(x, y)| d.to_map(Vec2::new(x, y)))
-            .map(|p| Vec3::new(p.x, d.floor, p.y));
-            put(Kind::Dig, line.to_vec());
+            // In at one mouth, through the hall, out at another.
+            let line: Vec<Vec3> = along(&d.through)
+                .into_iter()
+                .map(|p| d.to_map(p))
+                .map(|p| Vec3::new(p.x, d.floor, p.y))
+                .collect();
+            put(Kind::Dig, line);
         }
         for r in &self.land.high.ramps {
             let dir = (r.top - r.foot).normalize();
@@ -173,7 +158,7 @@ impl Skeleton {
             out.push(Vec3::new(p.x, x.level(), p.y));
         }
         for d in &self.land.digs {
-            if let Some(hall) = d.rooms.get(2) {
+            if let Some(hall) = d.rooms.get(1) {
                 let y = hall.min.y + (hall.max.y - hall.min.y) * 0.25;
                 let p = d.to_map(Vec2::new((hall.min.x + hall.max.x) * 0.5, y));
                 out.push(Vec3::new(p.x, d.floor, p.y));

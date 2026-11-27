@@ -175,6 +175,8 @@ pub struct Bot {
     stuck_for: f32,
     reverse_for: f32,
     reverse_steer: f32,
+    /// Backing off, where there's no room to pass, to let another tank by.
+    yield_for: f32,
     /// Side-to-side jink while fighting.
     jink: f32,
     jink_in: f32,
@@ -223,6 +225,7 @@ impl Bot {
             stuck_for: 0.0,
             reverse_for: 0.0,
             reverse_steer: 1.0,
+            yield_for: 0.0,
             jink,
             jink_in: 2.0,
             engaged: false,
@@ -249,6 +252,7 @@ impl Bot {
         self.seen_for = 0.0;
         self.stuck_for = 0.0;
         self.reverse_for = 0.0;
+        self.yield_for = 0.0;
         self.roam = None;
         self.way.clear();
         self.way_in = 0.0;
@@ -446,7 +450,7 @@ impl Bot {
                 (None, None, None) => world.map.center(),
             };
             if self.rng.chance(0.8) {
-                let ways = ways_toward(&world.map.routes, my2, front);
+                let ways = ways_toward(&world.map, t.pos, front);
                 if !ways.is_empty() {
                     self.way = ways[self.rng.index(ways.len())].clone();
                     self.replan_in = 0.0;
@@ -578,6 +582,25 @@ impl Bot {
                 }
             }
         }
+        // Another tank in the way: round it, or let it by.
+        let onto = target.map(|o| o.body).filter(|_| brawler && visible);
+        if let Some(wp) = self.path.first().map(|&p| flat(p)) {
+            match way_past(me, world, wp, nav, |o| Some(o.body) == onto) {
+                Past::Clear => {}
+                Past::Round(aim) => {
+                    let err = wrap_angle(yaw_of(aim - my2) - t.yaw());
+                    cmd.steer = (err * 2.5).clamp(-1.0, 1.0);
+                    cmd.throttle = cmd.throttle.min(0.8 - err.abs() * 0.5).max(0.15);
+                }
+                Past::Wait => cmd.throttle = (-t.speed() * 0.5).clamp(-1.0, 1.0),
+                Past::Creep => cmd.throttle = cmd.throttle.min(0.3),
+                Past::Back => self.yield_for = 2.0,
+            }
+            if self.yield_for > 0.0 {
+                self.yield_for -= dt;
+                cmd.throttle = -0.6;
+            }
+        }
         // A close-range gun with its target in sight and nothing in between
         // drives straight for it (where it's going, a moment ahead), not
         // along a path planned to where it was.
@@ -615,7 +638,14 @@ impl Bot {
         }
         if let (true, Some(o)) = (self.engaged, target) {
             let ring = objective.map(|o| (o.at, o.radius));
-            cmd = self.circle(t, flat(o.pos), ideal, ring, nav, dt);
+            // (With no room to on a deck, on along it: parked there it
+            // would hold up everyone.)
+            let circling = self.circle(t, flat(o.pos), ideal, ring, nav, dt);
+            if let Some(c) = circling {
+                cmd = c;
+            } else if !nav.over_deck(t.pos) {
+                cmd = Command::default();
+            }
         }
 
         // Stuck against something: back off with the wheel turned, then replan.
@@ -881,6 +911,7 @@ impl Bot {
     /// sideways round it (hard to hit, never parked), backing off when it
     /// gets too close and easing in when it drifts too far. With an
     /// objective, it leans back towards the site when it strays off it.
+    /// None when it's boxed in.
     fn circle(
         &mut self,
         t: &Tank,
@@ -889,7 +920,7 @@ impl Bot {
         objective: Option<(Vec2, f32)>,
         nav: &NavGrid,
         dt: f32,
-    ) -> Command {
+    ) -> Option<Command> {
         let my2 = flat(t.pos);
         let to = tp - my2;
         let d = to.length();
@@ -922,8 +953,7 @@ impl Bot {
             } else if open(-to) && d < ideal {
                 dir = -to;
             } else {
-                // Boxed in: sit and shoot.
-                return Command::default();
+                return None;
             }
         }
 
@@ -936,7 +966,7 @@ impl Bot {
             self.drive_sign = -self.drive_sign;
         }
         let err = if self.drive_sign > 0.0 { ahead } else { behind };
-        Command {
+        Some(Command {
             steer: (err * 2.5).clamp(-1.0, 1.0),
             throttle: self.drive_sign
                 * if err.abs() > 1.0 {
@@ -945,7 +975,7 @@ impl Bot {
                     strafe_speed(t) - err.abs() * 0.4
                 },
             ..Command::default()
-        }
+        })
     }
 
     /// Called when this bot's shot actually leaves the barrel.
@@ -954,17 +984,115 @@ impl Bot {
     }
 }
 
+/// What to do about a tank in the way.
+enum Past {
+    /// None there.
+    Clear,
+    /// Drive for here to get round it.
+    Round(Vec2),
+    /// No room: slowly, as it backs off.
+    Creep,
+    /// No room: let it go on.
+    Wait,
+    /// No room, and it's for this one to make some.
+    Back,
+}
+
+/// How tank `me`, driving for `wp`, gets past whoever's in its way: the
+/// nearest tank there it's closing on, other than one `skip` picks (its
+/// prey). It passes on the right unless the other's well over that way; two
+/// meeting head on see each other alike, so each makes half the room.
+fn way_past(
+    me: usize,
+    world: &World,
+    wp: Vec2,
+    nav: &NavGrid,
+    skip: impl Fn(&Tank) -> bool,
+) -> Past {
+    let t = &world.tanks[me];
+    let my2 = flat(t.pos);
+    let Some(dir) = (wp - my2).try_normalize() else {
+        return Past::Clear;
+    };
+    let right = dir.perp();
+    let half = |t: &Tank| {
+        t.chassis
+            .hull_half_x
+            .max(t.chassis.track_x + t.chassis.track_width * 0.5)
+    };
+    let mut best: Option<(f32, usize)> = None;
+    for (j, o) in world.tanks.iter().enumerate() {
+        if j == me || o.empty || skip(o) || (o.pos.y - t.pos.y).abs() > 2.5 {
+            continue;
+        }
+        let rel = flat(o.pos) - my2;
+        let (ahead, aside) = (rel.dot(dir), rel.dot(right));
+        let closing = flat(t.vel - o.vel).dot(dir);
+        if ahead > -2.0
+            && ahead < 9.0 + closing.max(0.0) * 2.0
+            && (closing > 1.0 || ahead < 9.0 && closing > -1.0)
+            && aside.abs() < half(t) + half(o) + 1.0
+            && best.is_none_or(|(a, _)| ahead < a)
+        {
+            best = Some((ahead, j));
+        }
+    }
+    let Some((ahead, j)) = best else {
+        return Past::Clear;
+    };
+    let o = &world.tanks[j];
+    let aside = (flat(o.pos) - my2).dot(right);
+    let oncoming = flat(o.vel).dot(dir) < -1.0;
+    let room = (half(t) + half(o) + 1.8) * if oncoming { 0.6 } else { 1.0 };
+    let first = if aside > 0.8 { -1.0 } else { 1.0 };
+    // Two meeting keep to their own sides (and make do with less room).
+    let tries = if oncoming {
+        [(first, 1.0), (first, 0.75)]
+    } else {
+        [(first, 1.0), (-first, 1.0)]
+    };
+    for (side, share) in tries {
+        let shift = if oncoming {
+            // What's short of it, shared.
+            side * (room * share - (aside * -side).max(0.0) * 0.5)
+        } else {
+            aside + side * room
+        };
+        let aim = my2 + dir * ahead.clamp(5.0, 12.0) + right * shift;
+        if nav.clear_from(t.pos, aim) {
+            return Past::Round(aim);
+        }
+    }
+    if !oncoming && flat(o.vel).dot(dir) > 1.0 {
+        return Past::Wait;
+    }
+    // The one that gives way backs off till there's room, the other after it.
+    let against = t.forward().dot(o.forward()) < 0.0;
+    if against && me > j {
+        Past::Back
+    } else if against && ahead > 8.5 {
+        Past::Creep
+    } else {
+        Past::Wait
+    }
+}
+
 /// The ways round (each taken from either end, joined at any point along
-/// it) that are about on the way from `from` to `front`: not much longer
+/// it, but at its near end if it's under rock and the bot isn't) that are
+/// about on the way from `from` to `front`: not much longer
 /// than going straight there, and ending nearer it. What's left of each
-/// to drive, from where it's joined.
-fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
+/// to drive, from where it's joined; one more than once, if it's to be taken
+/// more often.
+fn ways_toward(map: &crate::map::Map, from: Vec3, front: Vec2) -> Vec<Vec<Vec3>> {
+    let under = |p: Vec3| map.ground_height(p.x, p.z) > p.y + 4.0;
+    let inside = under(from);
+    let from = flat(from);
     let direct = from.distance(front);
     let mut out = Vec::new();
     if direct < 40.0 {
         return out;
     }
-    for way in ways {
+    for way in &map.routes {
         for reversed in [false, true] {
             let mut w = way.clone();
             if reversed {
@@ -975,7 +1103,12 @@ fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
                 continue;
             }
             // Join it at its point nearest here, and drive the rest.
-            let Some(k) = (0..w.len()).min_by(|&a, &b| {
+            // (Under rock, nearest seen from above is no way in.)
+            let reach = match w.iter().position(|&p| under(p)) {
+                Some(n) if !inside && n > 0 => n,
+                _ => w.len(),
+            };
+            let Some(k) = (0..reach).min_by(|&a, &b| {
                 from.distance(flat(w[a]))
                     .total_cmp(&from.distance(flat(w[b])))
             }) else {
@@ -996,7 +1129,11 @@ fn ways_toward(ways: &[Vec<Vec3>], from: Vec2, front: Vec2) -> Vec<Vec<Vec3>> {
                     k
                 };
                 if k < w.len() {
-                    out.push(w[k..].to_vec());
+                    // A long way under rock (a mine's drift) is there to be
+                    // used: as likely as three others.
+                    let covered = w[k..].iter().filter(|&&p| under(p)).count();
+                    let times = if covered >= 4 { 3 } else { 1 };
+                    out.extend(std::iter::repeat_n(w[k..].to_vec(), times));
                 }
             }
         }
@@ -1123,6 +1260,29 @@ mod tests {
             );
             prev = p;
         }
+    }
+
+    /// Going from one side to the other's by way of a mine, a bot's offered
+    /// the drift from its near mouth, not from its middle, under the rock.
+    #[test]
+    fn a_covered_way_is_joined_at_its_mouth() {
+        use crate::map::procgen::{self, Look};
+        let map = procgen::map(&crate::mine_spec(3, Look::Ithessar));
+        let under = |p: &Vec3| map.ground_height(p.x, p.z) > p.y + 4.0;
+        let base =
+            |k: usize| map.bases[k].iter().copied().sum::<Vec2>() / map.bases[k].len() as f32;
+        let mut dug = 0;
+        for (a, b) in [(0, 1), (1, 0)] {
+            let from = base(a);
+            let from = Vec3::new(from.x, map.ground_height(from.x, from.y), from.y);
+            for w in ways_toward(&map, from, base(b)) {
+                if w.iter().filter(|p| under(p)).count() >= 4 {
+                    assert!(!under(&w[0]), "joined under the rock, at {}", w[0]);
+                    dug += 1;
+                }
+            }
+        }
+        assert!(dug > 0, "no way by the mine");
     }
 
     #[test]
