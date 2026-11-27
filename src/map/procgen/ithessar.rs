@@ -6,6 +6,8 @@
 //! machines, it takes too much plasma for a house.
 //!
 //! - great buildings (`great`): the Sun, the Lens, the Weir.
+//! - the houses, the curved walls and the skyline are sculpted (`mason`), over
+//!   hidden boxes that collide.
 //! - lots: shard houses; crescents, a curved wall round a court tanks drive
 //!   into; houses raised on a pier and crystal legs; heaps of broken stone.
 //! - each side's staging court (`court`).
@@ -17,11 +19,13 @@
 mod civics;
 mod court;
 mod great;
+mod mason;
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use glam::{Quat, Vec2, Vec3};
 
+use self::mason::{Curve, Form, Mass};
 use super::shield::{angle, apart, dir, precinct_spots};
 use super::skeleton::*;
 use super::{Centerpiece, Style, civic, conduit};
@@ -42,6 +46,8 @@ const WALLS: [Vec3; 4] = [
     Vec3::new(0.25, 0.21, 0.28),
     Vec3::new(0.3, 0.3, 0.33),
 ];
+/// Stone as dark as the sculpted masonry's.
+const SOFT: f32 = 0.72;
 const C: Material = Material::Concrete;
 const V: Material = Material::Vhaal;
 const G: Material = Material::Glow;
@@ -138,11 +144,11 @@ impl Style for Ithessar {
             }
             LotKind::Big => {
                 let h = rng.range(9.0, 17.0);
-                shards(map, rng, f, h, true);
+                shards(map, rng, f, h);
             }
             LotKind::Small => {
                 let h = rng.range(4.0, 6.5);
-                shards(map, rng, f, h, true);
+                shards(map, rng, f, h);
             }
             LotKind::Raised => raised(map, rng, f),
             LotKind::Rubble => {
@@ -246,8 +252,7 @@ fn crystal(map: &mut Map, rng: &mut Rng, base: Vec3, axis: Vec3, r: f32, lit: bo
     });
 }
 
-/// A mass twisting as it rises: tiers, each a little smaller and turned a
-/// little more, a slit of plasma up its faces.
+/// A mass twisting as it rises, standing on `o`'s ground.
 #[allow(clippy::too_many_arguments)]
 fn twist(
     map: &mut Map,
@@ -257,67 +262,27 @@ fn twist(
     half: Vec2,
     h: f32,
     color: Vec3,
-    solid: bool,
-) {
-    let turn = rng.range(0.05, 0.13) * if rng.chance(0.5) { 1.0 } else { -1.0 };
-    let n = 3;
-    for k in 0..n {
-        let u = k as f32 / n as f32;
-        let hf = half * (1.0 - 0.2 * u);
-        let (y0, y1) = (
-            h * u - if k == 0 { 0.5 } else { 0.02 * k as f32 },
-            h * (u + 1.0 / n as f32),
-        );
-        put(
-            map,
-            o,
-            at,
-            hf,
-            turn * k as f32,
-            (y0, y1),
-            color * (1.0 - 0.07 * k as f32),
-            C,
-            solid,
-        );
-        map.oboxes.last_mut().unwrap().chip = 0.01;
-        // Its slits, on two faces.
-        if rng.chance(0.65) {
-            let w = rng.range(0.1, 0.18);
-            for e in [-1.0f32, 1.0] {
-                let off = Vec2::new(rng.range(-0.5, 0.5) * hf.x, e * (hf.y + 0.01));
-                let (s, c) = (turn * k as f32).sin_cos();
-                let off = Vec2::new(off.x * c + off.y * s, -off.x * s + off.y * c);
-                put(
-                    map,
-                    o,
-                    at + off,
-                    Vec2::new(w, 0.05),
-                    turn * k as f32,
-                    (y0.max(0.0) + (y1 - y0) * 0.18, y1 - (y1 - y0) * 0.14),
-                    PLASMA * 0.85,
-                    G,
-                    false,
-                );
-            }
-        }
-    }
-    // A cap of worked glass.
-    let hf = half * 0.84;
-    put(
-        map,
-        o,
-        at,
-        hf,
-        turn * n as f32,
-        (h - 0.03, h + 0.5),
-        GLASS * 1.5,
-        V,
-        false,
-    );
+    form: Form,
+) -> Mass {
+    let (ax, az) = o.axes();
+    let mass = Mass {
+        center: o.center + ax * at.x + az * at.y,
+        yaw: o.yaw,
+        half,
+        y0: 0.0,
+        y1: h,
+        turn: rng.range(0.12, 0.34) * if rng.chance(0.5) { 1.0 } else { -1.0 },
+        form,
+        color,
+        plinth: 1.1,
+    };
+    mass.collide(map);
+    mass.draw(map, rng);
+    mass
 }
 
 /// A house: one to three masses, the tallest with a blade of crystal on it.
-fn shards(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32, solid: bool) {
+fn shards(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32) {
     let color = WALLS[rng.index(WALLS.len())] * rng.range(0.92, 1.08);
     let half = o.half * 0.9;
     let split = if half.max_element() > 5.0 {
@@ -342,8 +307,13 @@ fn shards(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32, solid: bool) {
         };
         // (Turning, it keeps to its ground.)
         let hh = h * if k == 0 { 1.0 } else { rng.range(0.5, 0.85) };
-        twist(map, rng, o, at, hf * 0.93, hh, color, solid);
-        if k == 0 && rng.chance(0.7) {
+        let form = match rng.f32() {
+            x if x < 0.45 => Form::Shaft,
+            x if x < 0.75 && hh > 6.0 => Form::Bud,
+            _ => Form::Waist,
+        };
+        twist(map, rng, o, at, hf * 0.93, hh, color, form);
+        if k == 0 && form != Form::Bud && rng.chance(0.7) {
             let (ax, az) = o.axes();
             let p = o.center + ax * at.x + az * at.y;
             let lean = Vec3::new(rng.range(-0.25, 0.25), 1.0, rng.range(-0.25, 0.25));
@@ -395,6 +365,11 @@ fn blades(map: &mut Map, rng: &mut Rng, o: &OBox) {
     }
 }
 
+/// How far `o`'s frame turns an angle in it.
+fn o_turn(o: &OBox) -> f32 {
+    angle(o.axes().0)
+}
+
 /// A curved wall round a court open to the street: cover from behind, a way
 /// in from the front.
 fn crescent(map: &mut Map, rng: &mut Rng, lot: &Lot) {
@@ -409,59 +384,57 @@ fn crescent(map: &mut Map, rng: &mut Rng, lot: &Lot) {
     let fa = angle(front);
     let n = 14;
     let h = rng.range(5.0, 8.5);
+    let height = |a: f32| h * (0.55 + 0.45 * apart(a, fa) / PI);
+    let step = TAU / n as f32;
+    // The stones standing one after another, as the angles they run between.
+    let mut runs: Vec<(f32, f32)> = Vec::new();
     for k in 0..n {
-        let a = (k as f32 + 0.5) / n as f32 * TAU;
-        let off = apart(a, fa);
-        if off < 0.95 {
+        // (From its front round to its front again.)
+        let a = fa + (k as f32 + 0.5) * step;
+        if apart(a, fa) < 0.95 {
             continue;
         }
-        let d = dir(a);
         let broken = rng.chance(0.1);
         let hh = if broken {
             rng.range(1.0, 2.5)
         } else {
-            h * (0.55 + 0.45 * off / PI)
+            height(a)
         };
         // (Turned with its place: local x along the curve.)
-        let turn = -a + FRAC_PI_2;
         put(
             map,
             o,
-            d * (r - 0.8),
+            dir(a) * (r - 0.8),
             Vec2::new(r * PI / n as f32 * 1.04, 0.75),
-            turn,
+            -a + FRAC_PI_2,
             (-0.5, hh),
-            color * (1.0 - 0.02 * (k % 3) as f32),
+            color,
             C,
             true,
         );
-        map.oboxes.last_mut().unwrap().broken = broken;
-        if !broken {
-            put(
-                map,
-                o,
-                d * (r - 0.8),
-                Vec2::new(r * PI / n as f32 * 1.08, 0.92),
-                turn,
-                (hh - 0.02, hh + 0.35 + 0.004 * k as f32),
-                GLASS * 1.6,
-                V,
-                false,
-            );
-            if k % 2 == 0 {
-                put(
-                    map,
-                    o,
-                    d * (r - 1.56),
-                    Vec2::new(0.12, 0.05),
-                    turn,
-                    (0.8, hh - 0.8),
-                    PLASMA * 0.8,
-                    G,
-                    false,
-                );
-            }
+        let b = map.oboxes.last_mut().unwrap();
+        b.broken = broken;
+        b.hidden = !broken;
+        if broken {
+            continue;
         }
+        let (from, to) = (a - step * 0.5, a + step * 0.5);
+        match runs.last_mut() {
+            Some(run) if (run.1 - from).abs() < 0.01 => run.1 = to,
+            _ => runs.push((from, to)),
+        }
+    }
+    for (a0, a1) in runs {
+        Curve {
+            center: o.center,
+            r: r - 0.8,
+            thick: 0.7,
+            a0: a0 + o_turn(o),
+            a1: a1 + o_turn(o),
+            color,
+            lit: 2,
+        }
+        .draw(map, |a| height(a - o_turn(o)));
     }
     // A blade leaning over the court.
     let d = dir(fa + PI);
@@ -485,7 +458,6 @@ fn crescent(map: &mut Map, rng: &mut Rng, lot: &Lot) {
 fn raised(map: &mut Map, rng: &mut Rng, o: &OBox) {
     let (w, l) = (o.half.x, o.half.y);
     let lift = 6.6;
-    let pier = w.min(l) * 0.14;
     let color = WALLS[rng.index(WALLS.len())];
     put(
         map,
@@ -493,37 +465,27 @@ fn raised(map: &mut Map, rng: &mut Rng, o: &OBox) {
         Vec2::ZERO,
         Vec2::splat(w.min(l) * 0.26),
         FRAC_PI_4,
-        (-0.4, 1.3),
-        STONE,
+        (-0.4, 1.0),
+        STONE * SOFT,
         C,
         true,
     );
+    map.oboxes.last_mut().unwrap().chip = 0.15;
+    let pier = w.min(l) * 0.2;
     put(
         map,
         o,
         Vec2::ZERO,
-        Vec2::splat(pier),
+        Vec2::splat(pier * 0.62),
         FRAC_PI_4,
-        (1.25, lift + 0.1),
-        STONE * 0.9,
+        (0.95, lift + 0.1),
+        STONE,
         C,
         true,
     );
-    map.oboxes.last_mut().unwrap().chip = 0.01;
-    for k in 0..4 {
-        let d = dir(FRAC_PI_4 + k as f32 * FRAC_PI_2);
-        put(
-            map,
-            o,
-            d * (pier + 0.01),
-            Vec2::new(0.16, 0.05),
-            FRAC_PI_4 + k as f32 * FRAC_PI_2,
-            (1.7, lift - 0.4),
-            PLASMA * 0.85,
-            G,
-            false,
-        );
-    }
+    map.oboxes.last_mut().unwrap().hidden = true;
+    mason::column(map, o.center, pier, (0.95, lift), STONE);
+    let (ax, az) = o.axes();
     for (x, z) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
         let at = Vec2::new(x * (w - 1.3), z * (l - 1.3));
         put(
@@ -537,38 +499,33 @@ fn raised(map: &mut Map, rng: &mut Rng, o: &OBox) {
             V,
             true,
         );
-        map.oboxes.last_mut().unwrap().chip = 0.01;
-    }
-    let h = rng.range(5.0, 9.0);
-    for (k, (grow, y0, y1)) in [(1.0, 0.0, 0.5), (0.9, 0.45, 0.8), (0.74, 0.78, 1.0)]
-        .into_iter()
-        .enumerate()
-    {
-        put(
+        map.oboxes.last_mut().unwrap().hidden = true;
+        // (Its point's up inside the house.)
+        let p = o.center + ax * at.x + az * at.y;
+        let axis = Vec3::Y * (lift + 0.4) / 0.72;
+        crystal(
             map,
-            o,
-            Vec2::ZERO,
-            o.half * grow * 0.97,
-            0.05 * k as f32,
-            (lift + h * y0, lift + h * y1),
-            color * (1.0 - 0.06 * k as f32),
-            C,
-            true,
+            rng,
+            Vec3::new(p.x, -0.4, p.y),
+            axis,
+            0.75,
+            false,
+            false,
         );
-        map.oboxes.last_mut().unwrap().chip = 0.01;
     }
-    // A belt of light under its edge.
-    put(
-        map,
-        o,
-        Vec2::ZERO,
-        o.half * 0.97 + 0.04,
-        0.0,
-        (lift + 0.5, lift + 0.72),
-        PLASMA * 0.7,
-        G,
-        false,
-    );
+    let mass = Mass {
+        center: o.center,
+        yaw: o.yaw,
+        half: o.half * 0.97,
+        y0: lift,
+        y1: lift + rng.range(5.5, 9.0),
+        turn: rng.range(-0.16, 0.16),
+        form: Form::Shaft,
+        color,
+        plinth: 0.0,
+    };
+    mass.collide(map);
+    mass.draw(map, rng);
 }
 
 /// A building far off, only seen: three twisting tiers and a lit seam.
@@ -594,45 +551,22 @@ fn tower(map: &mut Map, rng: &mut Rng, o: &OBox, h: f32) {
         crystal(map, rng, foot, lean.normalize() * h * 1.1, r, true, false);
         return;
     }
-    for (k, (grow, y0, y1)) in [(0.95, 0.0, 0.45), (0.78, 0.44, 0.78), (0.55, 0.77, 1.0)]
-        .into_iter()
-        .enumerate()
-    {
-        put(
-            map,
-            o,
-            Vec2::ZERO,
-            o.half * grow,
-            turn * k as f32,
-            (h * y0 - 0.6, h * y1),
-            color,
-            C,
-            false,
-        );
-        if rng.chance(0.6) {
-            let side = rng.index(2);
-            let hf = o.half * grow;
-            let e = if rng.chance(0.5) { 1.0 } else { -1.0 };
-            let (at, half) = if side == 0 {
-                (Vec2::new(e * (hf.x + 0.02), 0.0), Vec2::new(0.06, 0.22))
-            } else {
-                (Vec2::new(0.0, e * (hf.y + 0.02)), Vec2::new(0.22, 0.06))
-            };
-            let (s, c) = (turn * k as f32).sin_cos();
-            let at = Vec2::new(at.x * c + at.y * s, -at.x * s + at.y * c);
-            put(
-                map,
-                o,
-                at,
-                half,
-                turn * k as f32,
-                (h * y0 + 1.0, h * y1 - 0.8),
-                PLASMA * 0.8,
-                G,
-                false,
-            );
-        }
+    Mass {
+        center: o.center,
+        yaw: o.yaw,
+        half: o.half * 0.95,
+        y0: 0.0,
+        y1: h,
+        turn: turn * 2.5,
+        form: match rng.f32() {
+            x if x < 0.4 => Form::Shaft,
+            x if x < 0.75 => Form::Bud,
+            _ => Form::Waist,
+        },
+        color,
+        plinth: 0.0,
     }
+    .draw_far(map, rng);
 }
 
 /// A blade of worked glass that came down on `o`.

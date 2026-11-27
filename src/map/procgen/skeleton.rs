@@ -863,6 +863,7 @@ pub fn lift(boxes: &mut [OBox], h: f32) {
 /// How much of a map there was, to raise what's built on it after.
 pub struct Mark {
     boxes: usize,
+    sculpted: usize,
     crystals: usize,
     paths: usize,
     lights: usize,
@@ -873,6 +874,7 @@ impl Mark {
     pub fn of(map: &Map) -> Mark {
         Mark {
             boxes: map.oboxes.len(),
+            sculpted: map.sculpted.verts.len(),
             crystals: map.crystals.len(),
             paths: map.glow_paths.len(),
             lights: map.lights.len(),
@@ -887,6 +889,9 @@ impl Mark {
             return;
         }
         lift(&mut map.oboxes[self.boxes..], h);
+        for v in &mut map.sculpted.verts[self.sculpted..] {
+            v.pos[1] += h;
+        }
         for c in &mut map.crystals[self.crystals..] {
             c.base.y += h;
         }
@@ -907,6 +912,17 @@ impl Mark {
     pub fn found(&self, map: &mut Map, sk: &Skeleton, h: f32) {
         for o in &mut map.oboxes[self.boxes..] {
             found(o, sk, h);
+        }
+        // What's sculpted goes down with it.
+        let foot = map.oboxes[self.boxes..]
+            .iter()
+            .map(|o| o.y0)
+            .fold(h - ROOT, f32::min);
+        for v in &mut map.sculpted.verts[self.sculpted..] {
+            if v.pos[1] < h - 0.3 {
+                let g = sk.ground(Vec2::new(v.pos[0], v.pos[2]));
+                v.pos[1] = v.pos[1].min(foot).min(g - ROOT);
+            }
         }
         for c in &mut map.crystals[self.crystals..] {
             let up = c.axis.normalize_or(glam::Vec3::Y);
