@@ -212,22 +212,27 @@ impl Soup {
         // Pairs that may fight, each found in every cube both are in.
         let mut pairs: Vec<(u32, u32)> = Vec::new();
         let mut planes: Vec<(u64, u32)> = Vec::new();
-        // The first face looked up in each bucket (by its key, hashed): a
-        // face is only ever found by one before it, so it need only be kept
-        // where one is. Few are, and sorting them all was most of the work.
-        const SLOTS: usize = 1 << 12;
-        let mut first = vec![u32::MAX; SLOTS];
-        let slot = |k: u64| (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52) as usize;
-        let mut asked: Vec<u64> = Vec::new();
         for (&c, here) in &space {
-            if here.len() < 2 {
-                continue;
-            }
             planes.clear();
-            for &k in &asked {
-                first[slot(k)] = u32::MAX;
+            for &i in here {
+                let t = &self.tris[i];
+                for (n, d) in [(t.n, t.d), (-t.n, -t.d)] {
+                    if n.dot(lean) < -2.0 * N_TOL {
+                        continue;
+                    }
+                    let dist = n.dot(center(c)) - d;
+                    for x in span(n.x, N_TOL, N_CELL) {
+                        for y in span(n.y, N_TOL, N_CELL) {
+                            for z in span(n.z, N_TOL, N_CELL) {
+                                for k in span(dist, d_tol, D_CELL) {
+                                    planes.push((key(x, y, z, k), i as u32));
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            asked.clear();
+            planes.sort_unstable();
             for &i in here {
                 let a = &self.tris[i];
                 let (n, d) = if a.n.dot(lean) < 0.0 {
@@ -241,34 +246,6 @@ impl Soup {
                     bucket(n.z, N_CELL),
                     bucket(n.dot(center(c)) - d, D_CELL),
                 );
-                asked.push(k);
-                let f = &mut first[slot(k)];
-                *f = (*f).min(i as u32);
-            }
-            for &i in here {
-                let t = &self.tris[i];
-                for (n, d) in [(t.n, t.d), (-t.n, -t.d)] {
-                    if n.dot(lean) < -2.0 * N_TOL {
-                        continue;
-                    }
-                    let dist = n.dot(center(c)) - d;
-                    for x in span(n.x, N_TOL, N_CELL) {
-                        for y in span(n.y, N_TOL, N_CELL) {
-                            for z in span(n.z, N_TOL, N_CELL) {
-                                for k in span(dist, d_tol, D_CELL) {
-                                    let k = key(x, y, z, k);
-                                    if first[slot(k)] < i as u32 {
-                                        planes.push((k, i as u32));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            planes.sort_unstable();
-            for (&i, &k) in here.iter().zip(&asked) {
-                let a = &self.tris[i];
                 // (The other of each pair is later in the list.)
                 let from = planes.partition_point(|&e| e <= (k, i as u32));
                 for &(_, j) in planes[from..].iter().take_while(|e| e.0 == k) {

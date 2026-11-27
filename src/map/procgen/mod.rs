@@ -34,7 +34,7 @@ pub mod foundry;
 mod imperium;
 mod ithessar;
 pub mod land;
-mod memo;
+pub mod memo;
 pub mod mine;
 mod resonant;
 pub mod setting;
@@ -359,7 +359,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
 /// and over).
 pub fn map(spec: &Spec) -> Map {
     // (The whole suite runs in one process, on a few dozen maps.)
-    const KEEP: usize = if cfg!(test) { 24 } else { 6 };
+    const KEEP: usize = if cfg!(test) { 48 } else { 6 };
     static KEPT: Memo<Spec, Map, KEEP> = Memo::new();
     KEPT.get(spec, || build_map(spec))
 }
