@@ -38,6 +38,8 @@ struct Star {
     color: Vec3,
     /// 1 at you, 0 at the edge of your cluster and beyond.
     near: f32,
+    /// How bright it is among stars (`star::Star::rank`).
+    rank: f32,
     /// 0..1, its own.
     seed: f32,
     system: usize,
@@ -75,6 +77,7 @@ impl Cluster {
                     at: flat * (DEPTH / (r + HALF)),
                     color: white.lerp(tint, if near > 0.0 { 1.0 } else { 0.55 }),
                     near,
+                    rank: crate::star::Star::of(s.starlight).rank(),
                     seed: (i as f32 * 0.618_034).fract(),
                     system: i,
                     side: s.owner(),
@@ -119,7 +122,7 @@ pub fn scene(c: &Cluster, time: f32, aspect: f32) -> Scene {
     for s in &c.stars {
         let twinkle = 0.85 + 0.15 * (time * (0.6 + s.seed) + s.seed * 40.0).sin();
         // Mostly faint, a few bright.
-        let bright = s.seed * s.seed * s.seed;
+        let bright = s.rank * s.rank * s.rank;
         let (size, strength) = if s.near > 0.0 {
             (1.0 + 0.7 * bright, 1.3 + 2.0 * bright)
         } else {

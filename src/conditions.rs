@@ -10,6 +10,7 @@ use glam::{Vec2, Vec3};
 use crate::map::Map;
 use crate::render::{Atmosphere, HIDDEN};
 use crate::rng::Rng;
+use crate::star::Star;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TimeOfDay {
@@ -73,17 +74,31 @@ pub const STORM_SIGHT: f32 = 65.0;
 const STORM_WIND: f32 = 15.0;
 
 /// What a map's fought in.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Conditions {
     pub time: TimeOfDay,
     pub weather: Weather,
+    /// How bright the system's star is, 1 the galaxy's average
+    /// (`galaxy::System::starlight`).
+    pub starlight: f32,
+}
+
+impl Default for Conditions {
+    fn default() -> Conditions {
+        Conditions {
+            time: TimeOfDay::Day,
+            weather: Weather::Clear,
+            starlight: 1.0,
+        }
+    }
 }
 
 impl Conditions {
     /// The conditions at the site whose map seed this is: half of them are
     /// fought over by day, a quarter at dusk, a quarter at night; a quarter
-    /// of those on sand (`sandy`) in a sandstorm, whatever the hour.
-    pub fn of_site(map_seed: u64, sandy: bool) -> Conditions {
+    /// of those on sand (`sandy`) in a sandstorm, whatever the hour; under
+    /// a star as bright as `starlight`.
+    pub fn of_site(map_seed: u64, sandy: bool, starlight: f32) -> Conditions {
         // Salted: what else is drawn from the seed stays as it was.
         let time = match Rng::new(map_seed ^ 0x0DA7_0D05).index(4) {
             0 => TimeOfDay::Dusk,
@@ -95,7 +110,11 @@ impl Conditions {
             true => Weather::Sandstorm,
             false => Weather::Clear,
         };
-        Conditions { time, weather }
+        Conditions {
+            time,
+            weather,
+            starlight,
+        }
     }
 
     /// Makes `map`'s sky over, from its own.
@@ -108,6 +127,8 @@ impl Conditions {
         if let Some(sky) = sky {
             sky.apply(&mut map.atmosphere);
         }
+        let up = self.time != TimeOfDay::Night;
+        Star::of(self.starlight).shine(&mut map.atmosphere, up);
         match self.weather {
             Weather::Clear => {}
             Weather::Sandstorm => storm(&mut map.atmosphere),
@@ -158,7 +179,7 @@ const NIGHT: Sky = Sky {
 /// Blows a sandstorm up in `a`: the sky one wall of dust, as bright as the
 /// horizon was, the sun a dim smear behind it, and the haze thick.
 fn storm(a: &mut Atmosphere) {
-    let shade = fill(a);
+    let shade = a.fill();
     let dust = a.dust / luma(a.dust).max(1e-4);
     // Keeps some of the hour's own hue (orange at dusk, blue by moonlight).
     // At night the dust holds what moonlight there is.
@@ -169,7 +190,7 @@ fn storm(a: &mut Atmosphere) {
     a.sun_color = a.sun_color * hue * 0.3;
     a.stars = 0.0;
     // The light the sun lost comes from all round instead.
-    a.ambient *= shade / fill(a).max(1e-4) * 1.15;
+    a.ambient *= shade / a.fill().max(1e-4) * 1.15;
     a.fog_density = -HIDDEN.ln() / STORM_SIGHT;
     a.wind = a.wind.normalize_or(Vec2::X) * STORM_WIND;
     a.blowing_sand = 1.0;
@@ -185,7 +206,7 @@ const KEEP_HUE: f32 = 0.3;
 
 impl Sky {
     fn apply(&self, a: &mut Atmosphere) {
-        let shade = self.fill.min(fill(a) * self.share);
+        let shade = self.fill.min(a.fill() * self.share);
         let sun = a.sun_dir.normalize();
         let y = sun.y.clamp(self.height.0, self.height.1);
         let flat = Vec2::new(sun.x, sun.z).normalize_or(Vec2::X) * (1.0 - y * y).sqrt();
@@ -199,20 +220,13 @@ impl Sky {
         a.sky_horizon = tinted(self.horizon, a.sky_horizon);
         a.ground_color *= self.ground;
         a.ambient = 1.0;
-        a.ambient = shade / fill(a).max(1e-4);
+        a.ambient = shade / a.fill().max(1e-4);
         a.stars = self.stars;
     }
 }
 
 fn luma(c: Vec3) -> f32 {
     c.dot(Vec3::new(0.2126, 0.7152, 0.0722))
-}
-
-/// How bright the light is on a wall in the shade (as the scene's shader
-/// mixes it: half sky, half ground).
-fn fill(a: &Atmosphere) -> f32 {
-    let sky = a.sky_horizon.lerp(a.sky_zenith, 0.35);
-    luma(a.ground_color.lerp(sky, 0.5)) * a.ambient
 }
 
 #[cfg(test)]
@@ -271,7 +285,7 @@ mod tests {
                 }
                 .apply(&mut m);
                 let a = &m.atmosphere;
-                let light = (luma(a.sun_color), fill(a));
+                let light = (luma(a.sun_color), a.fill());
                 assert!(
                     light.0 < last.0 && light.1 < last.1,
                     "{kind:?} at {time:?}: {light:?}, after {last:?}"
@@ -295,7 +309,7 @@ mod tests {
     fn sites_are_fought_over_at_all_hours() {
         let count = |t| {
             (0..4000)
-                .filter(|&s| Conditions::of_site(s, true).time == t)
+                .filter(|&s| Conditions::of_site(s, true, 1.0).time == t)
                 .count()
         };
         let [day, dusk, night] = TimeOfDay::ALL.map(count);
@@ -310,7 +324,10 @@ mod tests {
     fn storms_blow_on_sand() {
         let storms = (0..4000)
             .filter(|&s| {
-                let (on, off) = (Conditions::of_site(s, true), Conditions::of_site(s, false));
+                let (on, off) = (
+                    Conditions::of_site(s, true, 1.0),
+                    Conditions::of_site(s, false, 1.0),
+                );
                 assert_eq!(on.time, off.time);
                 assert_eq!(off.weather, Weather::Clear);
                 on.weather == Weather::Sandstorm
@@ -335,12 +352,13 @@ mod tests {
                 Conditions {
                     time,
                     weather: Weather::Sandstorm,
+                    ..Default::default()
                 }
                 .apply(&mut m);
                 let a = &m.atmosphere;
                 assert!((a.sight() - STORM_SIGHT).abs() < 0.1);
                 assert!(storming(a) && kind.sandy());
-                assert!(luma(a.sun_color) > 0.05 && fill(a) > 0.15, "{time:?}");
+                assert!(luma(a.sun_color) > 0.05 && a.fill() > 0.15, "{time:?}");
             }
         }
     }

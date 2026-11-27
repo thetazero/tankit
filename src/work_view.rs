@@ -17,6 +17,7 @@ use crate::menu::{Hit, Nav, back_at_foot};
 use crate::render::mesh::{Instance, MeshId};
 use crate::render::{Atmosphere, Camera, PointLight, Scene};
 use crate::sim::Tank;
+use crate::star::Star;
 use crate::tank::TankArt;
 use crate::theater_view::{self, MAX_PLANETS, SPACE_R, SystemArt};
 use crate::ui::design::{self, AMBER, BLUE, BODY, HEAD, MARGIN, SMALL, TEXT, TEXT_2, UNIT};
@@ -537,7 +538,8 @@ pub fn scene(
     instances.push((MeshId::SPHERE, Instance::new(space, dark)));
     theater_view::stars(camera.pos, &mut particles);
     let (at, r) = in_sky(STAR, aspect);
-    sys.star(at, r, &mut instances, &mut particles);
+    let star = Star::of(o.starlight);
+    sys.star(star, at, r, &mut instances, &mut particles);
     for (i, (&holder, &place)) in o.holders.iter().zip(&WORLDS).enumerate() {
         let (at, r) = in_sky(place, aspect);
         let out = (&mut instances, &mut particles);
@@ -558,7 +560,7 @@ pub fn scene(
     };
     let atmosphere = Atmosphere {
         sun_dir: Vec3::new(-0.6, 0.6, 0.55).normalize(),
-        sun_color: Vec3::new(1.1, 1.06, 1.02),
+        sun_color: Vec3::new(1.1, 1.06, 1.02) * star.light(),
         sky_zenith: Vec3::splat(0.12),
         sky_horizon: Vec3::splat(0.012),
         ground_color: Vec3::splat(0.03),
@@ -692,6 +694,7 @@ pub mod tests {
             id,
             at: 0,
             system: "TORKAR".into(),
+            starlight: 1.0,
             holders: vec![enemy],
             side,
             enemy,
