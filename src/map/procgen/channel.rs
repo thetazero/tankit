@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use glam::{Vec2, Vec3, Vec4};
 
+use super::Look;
+use super::bridge::{self, Deck, Form};
 use super::land::Land;
 use super::skeleton::smoothstep;
 use crate::map::river::River;
@@ -530,6 +532,20 @@ impl Channel {
                 );
                 ramps.push((i, slope));
             }
+        }
+        // (The river's only ever in Ithessar cities.) Two forms by turns.
+        let mut along: Vec<&Bridge> = self.bridges.iter().collect();
+        along.sort_by(|a, b| a.t.total_cmp(&b.t));
+        for (k, b) in along.into_iter().enumerate() {
+            let span = self.half + BANK;
+            let deck = Deck {
+                from: self.point(b.t, -span),
+                to: self.point(b.t, span),
+                half: b.half,
+                top: self.deck(b),
+            };
+            let form = [Form::Arches, Form::Stays][k % 2];
+            bridge::dress(map, deck, Look::Ithessar, form);
         }
         for (i, solid) in loose {
             map.oboxes[i].solid = solid;

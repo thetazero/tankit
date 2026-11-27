@@ -40,6 +40,7 @@ pub(in crate::map) struct Dig<'a> {
     pub map: &'a mut Map,
     pub l: &'a Skeleton,
     pub st: &'a dyn MineStyle,
+    pub look: Look,
     /// Building inside digs: the ground in one is its floor (else its top).
     pub inside: bool,
 }
@@ -57,6 +58,7 @@ impl DerefMut for Dig<'_> {
     }
 }
 
+use crate::map::procgen::bridge::{self, Form};
 use crate::map::procgen::crossing::Crossing;
 use crate::map::procgen::skeleton::{Lot, LotKind};
 
@@ -584,8 +586,8 @@ impl Dig<'_> {
     }
 
     /// The rail bridge out of the adit's mouth over the wash: a deck on
-    /// concrete piers, low steel girders along its edges, a truss
-    /// over them, tilted plates up onto it at each end.
+    /// concrete piers, low steel girders along its edges, what its
+    /// builders raise over them, tilted plates up onto it at each end.
     pub(super) fn rail_bridge(&mut self, br: &Crossing) {
         let lay = self.l;
         let (a, b) = (br.from, br.to);
@@ -627,7 +629,7 @@ impl Dig<'_> {
             });
         }
         // Girders along each edge: low enough to shoot over, high enough to
-        // keep a tank on the deck. A truss of posts and diagonals over them.
+        // keep a tank on the deck.
         let side_dir = dir.perp();
         for side in [-1.0f32, 1.0] {
             let off = side_dir * side * (DECK_HALF - 0.25);
@@ -642,39 +644,8 @@ impl Dig<'_> {
                 top_mat: Material::Rust,
                 ..OBox::default()
             });
-            let n = (len / 6.0) as usize;
-            let at = |k: usize, y: f32| {
-                let p = a + dir * (len * k as f32 / n as f32) + off;
-                Vec3::new(p.x, y, p.y)
-            };
-            for k in 0..=n {
-                let foot = at(k, DECK_TOP + 0.9);
-                self.segment(
-                    foot,
-                    foot + Vec3::Y * 2.6,
-                    0.12,
-                    RUST,
-                    Material::Rust,
-                    false,
-                );
-                if k < n {
-                    let (p, q) = if k % 2 == 0 {
-                        (foot, at(k + 1, DECK_TOP + 3.5))
-                    } else {
-                        (foot + Vec3::Y * 2.6, at(k + 1, DECK_TOP + 0.9))
-                    };
-                    self.segment(p, q, 0.08, RUST, Material::Rust, false);
-                }
-            }
-            self.segment(
-                at(0, DECK_TOP + 3.5),
-                at(n, DECK_TOP + 3.5),
-                0.14,
-                RUST,
-                Material::Rust,
-                false,
-            );
         }
+        bridge::dress(self.map, br.deck(), self.look, Form::of(self.look));
         // Piers: a concrete column under each rail where the wash falls
         // away, a steel cap beam across their tops.
         // Ten meters apart: room to drive between them, and either side of
