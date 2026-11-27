@@ -1,17 +1,18 @@
 //! The minimap, top right in battle (M: the whole map, big): the map's layout (`Map::skeleton`), so
 //! only generated maps have one. The land shaded by height, then streets,
-//! washes, buildings, digs and railroads; over it your side, what you're
-//! fighting over and you. Enemies aren't on it.
+//! washes, buildings, digs and railroads; over it where each side spawns, your
+//! side, what you're fighting over and you. Enemies aren't on it.
 
 use std::sync::Arc;
 
 use glam::Vec2;
 
 use crate::combat::{Match, Phase};
+use crate::faction::Faction;
 use crate::map::Map;
 use crate::map::procgen::skeleton::{LotKind, Rank, Skeleton};
 use crate::sim::Tank;
-use crate::ui::{Align, Painter, Rgba, design, theme, with_alpha};
+use crate::ui::{Align, Painter, Rgba, design, emblem, measure, theme, with_alpha};
 
 /// Its side, in logical px.
 pub const SIZE: f32 = 190.0;
@@ -223,6 +224,19 @@ pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], min: Vec2
     let ring = |p: &mut Painter, at: Vec2, r: f32, color: Rgba| {
         p.arc(at, r * k, 0.0, std::f32::consts::TAU, 1.6, color);
     };
+    let stands: Vec<Vec2> = m
+        .raid
+        .iter()
+        .flat_map(|r| r.stands.clone())
+        .map(|s| on(flat(s)))
+        .collect();
+    for (team, spots) in m.world.map.bases.iter().enumerate() {
+        if let Some(area) = spawn_area(spots) {
+            let area = area.map(|q| on(q));
+            let yours = team == me.team;
+            spawn(p, m.factions[team], yours, area, &stands, (min, side), big);
+        }
+    }
     if let Some(h) = &m.hold {
         for s in &h.sites {
             ring(p, on(s.at), 6.0, theme::FG);
@@ -266,6 +280,71 @@ pub fn draw(p: &mut Painter, chart: &Chart, m: &Match, tanks: &[Tank], min: Vec2
     }
     if big {
         compass(p, min + Vec2::new(side - 44.0, 52.0));
+    }
+}
+
+/// The corners of the box round a side's spawn `spots`, a tank's room over.
+fn spawn_area(spots: &[Vec2]) -> Option<[Vec2; 2]> {
+    let first = *spots.first()?;
+    let (lo, hi) = spots
+        .iter()
+        .fold((first, first), |(a, b), &q| (a.min(q), b.max(q)));
+    Some([lo - Vec2::splat(5.0), hi + Vec2::splat(5.0)])
+}
+
+/// Where side `f` spawns: `area` (opposite corners, on screen) in its colour
+/// and its emblem on a badge, rimmed white if it's yours. The badge steps off
+/// the raid `stands` so it hides no flag, and stays on the chart (`min`, its
+/// side); the big chart's says what it is.
+fn spawn(
+    p: &mut Painter,
+    f: Faction,
+    yours: bool,
+    area: [Vec2; 2],
+    stands: &[Vec2],
+    (min, side): (Vec2, f32),
+    big: bool,
+) {
+    let color = f.ui();
+    let (lo, hi) = (area[0].min(area[1]), area[0].max(area[1]));
+    p.rect(lo, hi - lo, with_alpha(color, 0.3));
+    p.rect_outline(lo, hi - lo, if big { 2.0 } else { 1.2 }, color);
+    let r = if big { 17.0 } else { 10.0 };
+    let gap = r + if big { 12.0 } else { 7.0 };
+    let mut at = (lo + hi) * 0.5;
+    for &s in stands {
+        if at.distance(s) < gap {
+            // Toward the middle of the chart if it's dead on.
+            let middle = min + Vec2::splat(side * 0.5);
+            let off = (at - s).try_normalize();
+            at = s + off.unwrap_or((middle - s).normalize_or(Vec2::Y)) * gap;
+        }
+    }
+    let at = at.clamp(min + Vec2::splat(r), min + Vec2::splat(side - r));
+    let rim = if yours { theme::FG } else { color };
+    p.disc(at, r, rim, rim);
+    p.disc(
+        at,
+        r - if big { 2.5 } else { 1.6 },
+        design::GROUND,
+        design::GROUND,
+    );
+    emblem::emblem(p, f, at, r * 1.2, if big { 2.0 } else { 1.3 }, color);
+    if big {
+        let text = if yours { "YOUR SPAWN" } else { "ENEMY SPAWN" };
+        let style = design::SMALL.colored(rim);
+        let w = measure(text, &style) * 0.5 + 8.0;
+        let x = at.x.clamp(min.x + w, min.x + side - w);
+        let below = hi.y.max(at.y + r) + 4.0;
+        let h = style.size + 8.0;
+        let y = if below + h > min.y + side {
+            lo.y.min(at.y - r) - 4.0 - h
+        } else {
+            below
+        };
+        let plate = with_alpha(design::GROUND, 0.8);
+        p.rect(Vec2::new(x - w, y), Vec2::new(w * 2.0, h), plate);
+        p.text(Vec2::new(x, y + 4.0), text, &style, Align::Center);
     }
 }
 
@@ -320,6 +399,19 @@ mod tests {
             }
         }
         assert!(Chart::of(&Map::sanctum()).is_none());
+    }
+
+    /// Every spawn's inside its side's marked area, and the areas don't overlap.
+    #[test]
+    fn spawns_are_marked() {
+        assert!(spawn_area(&[]).is_none());
+        let m = crate::map::procgen::map(&crate::city_spec(1, Look::Imperium));
+        let areas: Vec<[Vec2; 2]> = m.bases.iter().map(|b| spawn_area(b).unwrap()).collect();
+        for (b, [lo, hi]) in m.bases.iter().zip(&areas) {
+            assert!(b.iter().all(|q| q.cmpge(*lo).all() && q.cmple(*hi).all()));
+        }
+        let ([alo, ahi], [blo, bhi]) = (areas[0], areas[1]);
+        assert!(ahi.cmplt(blo).any() || bhi.cmplt(alo).any());
     }
 
     /// Ahead of a tank facing +z is up, and its left is left.
