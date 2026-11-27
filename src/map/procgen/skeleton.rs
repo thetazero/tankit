@@ -573,11 +573,7 @@ impl Skeleton {
     /// Once everything's built: each side's spawns in its court, the open
     /// spots, and the repair drops that landed clear.
     pub fn finish(&self, map: &mut Map) {
-        let clear = |m: &Map, p: Vec2| {
-            !m.oboxes
-                .iter()
-                .any(|o| o.solid && o.distance(p) < TANK_CLEAR)
-        };
+        let clear = |m: &Map, p: Vec2| !m.oboxes.iter().any(|o| o.solid && o.within(p, TANK_CLEAR));
         for (k, b) in self.bases.iter().enumerate() {
             let spots = b
                 .spawn_points()

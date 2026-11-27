@@ -105,8 +105,9 @@ jobs:
         timeout-minutes: 12
 
       # The time cap: the whole optimized suite, slow tests included, takes
-      # two to two and a half minutes (#613); past this it's a hang or a
-      # regression.
+      # under three minutes (#714); past this it's a hang or a regression.
+      # A test that builds whole maps costs seconds for each: use ones other
+      # tests build (`procgen::map` keeps them), and few seeds.
       - name: Run tests (release)
         run: cargo test --release --locked
         timeout-minutes: 4

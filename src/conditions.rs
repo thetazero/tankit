@@ -243,39 +243,45 @@ mod tests {
     #[test]
     fn any_map_has_a_day_a_dusk_and_a_night() {
         let g = Generator::up(Faction::Imperium);
-        for kind in [
-            MapKind::Reservoir,
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
-            MapKind::Foundry(
-                crate::map::procgen::Look::Imperium,
-                crate::map::procgen::foundry::Ground::Desert,
+        // (Maps the z-fighting tests build too: they take seconds each.)
+        use crate::map::procgen::foundry::Ground;
+        let up = Generator::up;
+        for (kind, seed) in [
+            (MapKind::Reservoir, 0),
+            (MapKind::Sanctum(Ground::Desert), 1),
+            (MapKind::Sanctum(Ground::Tundra), 2),
+            (MapKind::Sanctum(Ground::Grassland), 3),
+            (MapKind::Foundry(Look::Imperium, Ground::Desert), 0),
+            (MapKind::City(Look::Imperium, Default::default()), 0),
+            (MapKind::City(Look::Resonant, Default::default()), 0),
+            (MapKind::City(Look::Resonant, Setting::Grassland), 1),
+            (
+                MapKind::ShieldSite(Look::Imperium, Default::default(), g),
+                0,
             ),
-            MapKind::City(Look::Imperium, Default::default()),
-            MapKind::City(Look::Resonant, Default::default()),
-            MapKind::City(Look::Resonant, Setting::Grassland),
-            MapKind::ShieldSite(Look::Imperium, Default::default(), g),
-            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Depot(
-                Look::Imperium,
-                crate::map::procgen::foundry::Ground::Grassland,
+            (MapKind::Depot(Look::Imperium, Ground::Desert), 0),
+            (MapKind::Depot(Look::Resonant, Ground::Tundra), 1),
+            (MapKind::Depot(Look::Uthenn, Ground::Grassland), 2),
+            (MapKind::Mine(Look::Imperium, Ground::Desert), 0),
+            (MapKind::Mine(Look::Resonant, Ground::Tundra), 0),
+            (MapKind::Mine(Look::Uthenn, Ground::Grassland), 0),
+            (MapKind::Desert, 3),
+            (
+                MapKind::ShieldSite(Look::Imperium, Setting::Tundra, up(Faction::Uthenn)),
+                0,
             ),
-            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Mine(
-                Look::Ithessar,
-                crate::map::procgen::foundry::Ground::Grassland,
+            (
+                MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
+                1,
             ),
-            MapKind::Desert,
-            MapKind::ShieldSite(Look::Imperium, Setting::Tundra, g),
-            MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Desert, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Tundra, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Grassland, g),
+            (MapKind::ShieldCamp(Ground::Desert, g), 3),
+            (MapKind::ShieldCamp(Ground::Tundra, g), 0),
+            (
+                MapKind::ShieldCamp(Ground::Grassland, up(Faction::Resonant)),
+                2,
+            ),
         ] {
-            let own = make_map(kind, 1);
+            let own = make_map(kind, seed);
             let mut last = (f32::INFINITY, f32::INFINITY);
             for time in TimeOfDay::ALL {
                 let mut m = own.clone();

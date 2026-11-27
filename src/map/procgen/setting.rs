@@ -178,7 +178,7 @@ pub(in crate::map) fn green_or_white(
             && sk.squares.iter().all(|q| q.center.distance(p) > q.radius)
             && sk.crossings.iter().all(|c| c.distance(p) > c.half)
             && !sk.land.channel.as_ref().is_some_and(|c| c.wet(p, 2.0))
-            && !map.oboxes.iter().any(|o| o.distance(p) < 0.8)
+            && !map.oboxes.iter().any(|o| o.within(p, 0.8))
     };
     for _ in 0..3 {
         foundry::growth(map, sk, &land, ground, &mut rng, &clear);
@@ -201,7 +201,7 @@ pub(in crate::map) fn green_or_white(
                     || sk.land.channel.as_ref().is_some_and(|c| c.wet(p, 6.0))
                     || sk.lots.iter().any(|l| l.footprint.distance(p) < 3.5)
                     // (Other trees don't count.)
-                    || map.oboxes.iter().any(|o| o.rock.is_none() && o.distance(p) < 2.5);
+                    || map.oboxes.iter().any(|o| o.rock.is_none() && o.within(p, 2.5));
                 if !taken {
                     foundry::tree(map, &mut rng, p, sk.ground(p) + hills(p));
                 }

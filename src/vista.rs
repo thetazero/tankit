@@ -302,17 +302,17 @@ mod tests {
             ),
             (
                 MapKind::Mine(
-                    crate::map::procgen::Look::Imperium,
+                    crate::map::procgen::Look::Resonant,
                     crate::map::procgen::foundry::Ground::Tundra,
                 ),
-                2,
+                0,
             ),
             (
                 MapKind::Mine(
                     crate::map::procgen::Look::Uthenn,
                     crate::map::procgen::foundry::Ground::Grassland,
                 ),
-                3,
+                0,
             ),
             (MapKind::Desert, 0),
             (MapKind::Desert, 1),
