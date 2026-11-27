@@ -23,7 +23,7 @@ fn a_step_ends_at_war() {
 
 /// An attacker under an enemy's shield fights a seat short there (#426):
 /// in the battle for a site on a planet with the holder's generator up,
-/// its fire is cut by one seat in `Rules::seats`. The defender never is,
+/// one of its seats is closed. The defender never is,
 /// and with the generators down, nor is the attacker.
 #[test]
 fn shields_cost_the_attacker_a_seat() {
@@ -39,24 +39,36 @@ fn shields_cost_the_attacker_a_seat() {
     let t = (a as usize..b as usize)
         .find(|&i| g.sites[i].owner as usize == owner && up[g.sites[i].planet as usize] > 0)
         .expect("a site under the owner's shield");
-    let open = g.open_fire(s);
-    let fire = g.fire(s, t);
-    let short = (g.rules.seats - SHIELD_SEATS as f32) / g.rules.seats;
-    // (split between the battles each is in)
-    let split = |g: &Galaxy, f: usize| g.open_fire(s)[f] / g.battles_in(s)[f] as f32;
     let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
-    assert!(open[other] > 0.0 && near(fire[other], split(&g, other) * short));
+    let n = |g: &Galaxy, f: usize| g.battles_in(s)[f] as f32;
+    let seat = |g: &Galaxy, f: usize| crate::economy::damage_factor(g.gear(s, f));
+    let seats = g.rules.seats;
+    // Both sides with pilots to fill every seat.
+    for f in [owner, other] {
+        let want = 200 + (seats * n(&g, f)) as u32;
+        g.systems[s].hulls[f] = want;
+        g.systems[s].realms[f] = realm::NONE;
+    }
+    let fire = g.fire(s, t);
+    assert!(near(
+        fire[other],
+        (seats - SHIELD_SEATS as f32) * seat(&g, other)
+    ));
     assert!(
-        near(fire[owner], split(&g, owner)),
+        near(fire[owner], seats * seat(&g, owner)),
         "the defender is never short"
     );
+    // Too few pilots to fill the seats left: the closed one costs nothing.
+    g.systems[s].hulls[other] = 3 * g.battles_in(s)[other];
+    assert!(near(g.fire(s, t)[other], 3.0 * seat(&g, other)));
+    g.systems[s].hulls[other] = 200 + (seats * n(&g, other)) as u32;
     // Every generator down: no shield, no seat lost.
     for site in &mut g.sites[a as usize..b as usize] {
         if matches!(site.kind, SiteKind::Shield { .. }) {
             site.kind = SiteKind::Shield { damaged: true };
         }
     }
-    assert!(near(g.fire(s, t)[other], split(&g, other)));
+    assert!(near(g.fire(s, t)[other], seats * seat(&g, other)));
 }
 
 /// Shields don't stand in the way (#426): an attacker's win takes a site
@@ -393,11 +405,7 @@ fn realms_hire_companies() {
 /// before and after.
 fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     assert!(!g.companies.is_empty());
-    let start: f32 = g
-        .companies
-        .iter()
-        .map(|c| c.capital(g.rules.hull_cost))
-        .sum();
+    let start: f32 = g.companies.iter().map(|c| c.capital(g.hull_rate)).sum();
     // Realms hire only when the battle math says it's worth it: it takes a
     // while for enough to be.
     for _ in 0..400 {
@@ -420,11 +428,7 @@ fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     assert!(b.signed > 10, "only {} contracts", b.signed);
     assert!(b.won > 0 && b.broken + b.expired > 0);
     assert!(b.upfront > 0.0 && b.billed > 0.0 && b.sold > 0.0);
-    let end: f32 = g
-        .companies
-        .iter()
-        .map(|c| c.capital(g.rules.hull_cost))
-        .sum();
+    let end: f32 = g.companies.iter().map(|c| c.capital(g.hull_rate)).sum();
     (start, end)
 }
 

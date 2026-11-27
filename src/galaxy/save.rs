@@ -86,8 +86,6 @@ struct Saved {
     #[serde(default)]
     job_worth: Option<f32>,
     #[serde(default)]
-    foundry_use: Option<f32>,
-    #[serde(default)]
     hire_rank: f32,
     #[serde(default)]
     hire_trust: Option<[f32; 2]>,
@@ -478,7 +476,6 @@ impl Galaxy {
             pay: Some(self.pay),
             trust_ticks: Some(self.trust_ticks),
             job_worth: Some(self.job_worth),
-            foundry_use: Some(self.foundry_use),
             hire_rank: self.hire_rank,
             hire_trust: Some(self.hire_trust),
             lessons: self.lessons.clone(),
@@ -654,9 +651,6 @@ impl Galaxy {
         let n = g.systems.len();
         g.lessons
             .retain(|l| (l.system as usize) < n && (l.side as usize) < SIDES);
-        if let Some(x) = s.foundry_use {
-            g.foundry_use = x;
-        }
         if let Some(x) = s.job_worth {
             g.job_worth = x;
         }

@@ -120,15 +120,13 @@ pub const FTL_RANGE: f32 = 250.0;
 /// Most systems a system can send to (the nearest ones within range).
 const NEIGHBORS: usize = 12;
 
-/// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
-const RESONANT_HULL_COST: f32 = 0.00005;
 /// How far either way luck takes a side's fire in a battle.
 const LUCK: f32 = 0.25;
 /// What a site that makes one thing makes of it, against one of a pair that
 /// made both: the galaxy's output of each is the same.
 const BOTH: f32 = 18.0 / 11.0;
 /// Hulls a foundry makes, against what it's rated at.
-const HULLS: f32 = 10.0;
+const HULLS: f32 = 5.0;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: u32 = 200;
 /// Most quiet ticks a step skips looking for the next war.
@@ -152,8 +150,7 @@ pub struct Rules {
     /// do in a played one (`--arena`: about 80 kills a round among 12).
     pub kill: f32,
     /// Seats a side has in a battle, as in a played one: an attacker under
-    /// an enemy's shield fights with `SHIELD_SEATS` fewer, its fire cut by
-    /// that share.
+    /// an enemy's shield fights with `SHIELD_SEATS` fewer.
     pub seats: f32,
     /// Most a side alone in a system walks into of the enemy's unguarded
     /// sites a tick.
@@ -199,8 +196,6 @@ pub struct Rules {
     pub pilot_upkeep: f32,
     /// Crystals a ship costs its company a tick.
     pub ship_upkeep: f32,
-    /// Crystals a hull costs to build.
-    pub hull_cost: f32,
     /// Crystals it costs to train a pilot.
     pub train_cost: f32,
     /// Chance a tick a pilot retires, realm or merc.
@@ -252,7 +247,6 @@ impl Default for Rules {
             research_price: 1.2,
             pilot_upkeep: 0.02,
             ship_upkeep: 0.2,
-            hull_cost: 0.01,
             train_cost: 3.0,
             career: 0.002,
             patience: 60,
@@ -438,8 +432,6 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
-    /// The share of what foundries could make that they have lately.
-    pub(crate) foundry_use: f32,
     /// Scratch: the system whose battles are being fought, and how many each
     /// side was in as the tick's began.
     engaged: Option<(usize, [u32; SIDES])>,
@@ -694,9 +686,8 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
-            foundry_use: 0.02,
             engaged: None,
-            hull_worth: vec![rules.hull_cost; count],
+            hull_worth: vec![0.01; count],
             hull_use: vec![0.0; count],
             incoming: Default::default(),
             vaults: Vec::new(),
@@ -708,7 +699,7 @@ impl Galaxy {
             lessons: Vec::new(),
             hire_rank: 0.0,
             worth_before: 0.0,
-            hull_rate: rules.hull_cost,
+            hull_rate: 0.01,
             fell_new: 0,
             fell_old: 0,
             border: vec![false; count],
@@ -807,7 +798,7 @@ impl Galaxy {
             merc_capital: self
                 .companies
                 .iter()
-                .map(|c| c.capital(self.rules.hull_cost))
+                .map(|c| c.capital(self.hull_rate))
                 .sum(),
             contracts: self
                 .companies
@@ -993,28 +984,17 @@ impl Galaxy {
         self.fill_vaults();
         let mut mined = vec![0.0f32; self.vaults.len()];
         let mut crystals = vec![0.0; self.realms.len()];
-        let resonant = Faction::Resonant.index();
-        let extra = |f: usize| {
-            if f == resonant {
-                RESONANT_HULL_COST
-            } else {
-                0.0
-            }
-        };
         let offset = self.rng.index(self.systems.len());
-        // What a hull's worth where: no more than building another and
-        // bringing it; and it keeps, so quiet ticks say little.
-        let most = self.rules.hull_cost + self.rules.ftl_cost;
+        // What a hull's worth where: it keeps, so quiet ticks say little.
         for (worth, seen) in self.hull_worth.iter_mut().zip(&mut self.hull_use) {
             let sense = if *seen > 0.0 {
                 self.rules.sense
             } else {
                 self.rules.sense / 100.0
             };
-            *worth += sense * (seen.min(most) - *worth);
+            *worth += sense * (*seen - *worth);
             *seen = 0.0;
         }
-        let (mut could, mut did) = (0.0f32, 0.0f32);
         for i in 0..self.systems.len() {
             // Whoever's first gets the crystal, so a different one each tick.
             let s = (i + offset) % self.systems.len();
@@ -1035,23 +1015,12 @@ impl Galaxy {
                             mined[v] += c * (1.0 - self.rules.research);
                         }
                     }
-                    // A foundry works while a hull's worth more there than it
-                    // costs, and its realm can pay for it.
-                    SiteKind::Foundry { hulls } => {
-                        let cost = hulls * (self.rules.hull_cost + extra(f));
-                        let realm = &mut self.realms[r as usize];
-                        could += hulls;
-                        if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
-                            realm.crystals -= cost;
-                            sys.building[f] += hulls;
-                            did += hulls;
-                        }
-                    }
+                    // A foundry always works, and hulls cost nothing.
+                    SiteKind::Foundry { hulls } => sys.building[f] += hulls,
                     SiteKind::Shield { .. } | SiteKind::Outpost => {}
                 }
             }
         }
-        self.foundry_use += 0.02 * (did / could.max(1.0) - self.foundry_use);
         // The yards deliver whole hulls: those done, the rest still building.
         for (sys, moves) in self.systems.iter_mut().zip(&mut self.moves) {
             for f in 0..SIDES {
@@ -1222,27 +1191,27 @@ impl Galaxy {
     /// fire with no shield in its way, a seat short for a side attacking
     /// under an enemy's shield up on the site's planet (#426).
     fn fire(&self, s: usize, t: usize) -> [f32; SIDES] {
-        let mut fire = self.open_fire(s);
         // A pilot fights one battle a tick: each side's are split between
         // all it's in.
         let in_battles = match self.engaged {
             Some((at, n)) if at == s => n,
             _ => self.battles_in(s),
         };
-        for f in 0..SIDES {
-            fire[f] /= in_battles[f].max(1) as f32;
-        }
         let planet = self.sites[t].planet as usize;
-        for f in 0..SIDES {
-            if f != self.sites[t].owner as usize && self.shields_up(s, f)[planet] > 0 {
-                fire[f] *= self.shield_cut();
-            }
-        }
-        fire
+        let owner = self.sites[t].owner as usize;
+        std::array::from_fn(|f| {
+            // Under an enemy's shield, a seat's closed: pilots with no seat
+            // don't fire.
+            let shielded = f != owner && self.shields_up(s, f)[planet] > 0;
+            let seats = self.seats_in(shielded);
+            let pilots = self.able(s, f) / in_battles[f].max(1) as f32;
+            pilots.min(seats) * crate::economy::damage_factor(self.gear(s, f))
+        })
     }
 
     /// Each side's fire in system `s` with no shield in its way: its
     /// strength, scaled to the hulls that fire (`firing`).
+    #[cfg(test)]
     fn open_fire(&self, s: usize) -> [f32; SIDES] {
         let hulls = self.systems[s].hulls;
         let mut fire = self.strength(s);
@@ -1325,10 +1294,10 @@ impl Galaxy {
         self.war_hulls = war;
     }
 
-    /// What's left of a side's fire under an enemy's shield: a seat short.
-    fn shield_cut(&self) -> f32 {
-        let seats = self.rules.seats.max(1.0);
-        (seats - SHIELD_SEATS as f32).max(0.0) / seats
+    /// A side's seats in a battle: one fewer under an enemy's shield.
+    pub(crate) fn seats_in(&self, shielded: bool) -> f32 {
+        let closed = if shielded { SHIELD_SEATS as f32 } else { 0.0 };
+        (self.rules.seats - closed).max(0.0)
     }
 
     /// Side `f`'s gear level in system `s` (#438): its realm's tier for the

@@ -889,18 +889,15 @@ impl Galaxy {
     /// System `t`'s worth to side `f`: what its production sites turn out a
     /// tick (those `f` holds, or with not `own` those it doesn't) over the
     /// ticks it can expect to hold them, in crystal: a foundry's hulls at what
-    /// they're worth there, over what they cost, as far as foundries work.
+    /// they're worth there.
     pub(crate) fn worth(&self, t: usize, f: usize, own: bool) -> f32 {
         let (a, b) = self.systems[t].sites;
-        // What a hull there's worth over what it costs, for as much as
-        // foundries are at work.
-        let rent = (self.hull_worth[t] - self.rules.hull_cost).max(0.0) * self.foundry_use;
         let income: f32 = self.sites[a as usize..b as usize]
             .iter()
             .filter(|s| (s.owner as usize == f) == own)
             .map(|s| match s.kind {
                 SiteKind::Mine { crystals } => crystals,
-                SiteKind::Foundry { hulls } => hulls * rent,
+                SiteKind::Foundry { hulls } => hulls * self.hull_worth[t],
                 SiteKind::Shield { .. } | SiteKind::Outpost => 0.0,
             })
             .sum();
@@ -994,7 +991,7 @@ impl Galaxy {
         let unit = if bought > 0 {
             spend / bought as f32
         } else {
-            self.rules.hull_cost
+            self.hull_rate
         };
         // A pilot for each hull that can fire: those aboard, and as many as
         // will sign for its bid (no less than pilots take).
@@ -1105,7 +1102,7 @@ impl Galaxy {
             *he += more;
             *spare -= more;
         };
-        let cut = self.shield_cut();
+        let short = self.seats_in(true);
         let (k, seats, blitz) = (self.rules.kill, self.rules.seats, self.rules.blitz as f32);
         let (mut paid, mut length) = (0.0f32, 0.0f32);
         {
@@ -1155,16 +1152,22 @@ impl Galaxy {
                     } else {
                         theirs
                     };
-                    let front = seats * (fought + mine).max(1.0);
-                    // Its crews and its own pilots share the seats.
+                    let n = (fought + mine).max(1.0);
+                    let front = seats * n;
+                    // Its crews and its own pilots share the seats, split
+                    // between the battles: a seat's closed in each under an
+                    // enemy's shield.
                     let (crews, own_fire) = (hm.min(crew), ho.min(flown));
-                    let seated = (front / (crews + own_fire).max(1.0)).min(1.0);
-                    let ff = (crews * kit + own_fire) * pf * seated;
+                    let able = crews + own_fire;
+                    let fires = |seats: f32| {
+                        (crews * kit + own_fire) * pf * (seats * n / able.max(1.0)).min(1.0)
+                    };
+                    let ff = fires(seats);
+                    let ff_at = if gens >= 1.0 { fires(short) } else { ff };
                     let fe = he.min(crew_e).min(front) * pe;
                     // Battle by battle: theirs open to it (while generators
                     // are up, those and what they don't shield, a seat short),
                     // and its own.
-                    let n = (fought + mine).max(1.0);
                     let chance = |ff: f32, fe: f32| {
                         let kills = (k * ff / ae / n).min(he);
                         let dead = (k * fe / af / n).min(hf);
@@ -1176,11 +1179,7 @@ impl Galaxy {
                     } else {
                         1.0
                     };
-                    let at = if gens >= 1.0 {
-                        chance(ff * cut, fe)
-                    } else {
-                        held
-                    };
+                    let at = if gens >= 1.0 { chance(ff_at, fe) } else { held };
                     let won = (at * fought).min(theirs);
                     let lost = ((1.0 - held) * mine).min(mine);
                     gens = (gens - won).max(0.0);
@@ -1191,7 +1190,7 @@ impl Galaxy {
                     let left = 1.0 - (k * fe / af / hf).min(1.0);
                     ho *= left;
                     hm *= left;
-                    he = (he - k * ff / ae).max(0.0);
+                    he = (he - k * (ff_at * fought + ff * mine) / n / ae).max(0.0);
                 }
                 // A raid goes on till it has everything (or all but).
                 if raid && theirs < 0.3 {
@@ -2218,7 +2217,7 @@ impl Galaxy {
     /// What companies made this tick, all told: their capital and what
     /// they're owed, against last tick's.
     fn reckon_profit(&mut self) {
-        let price = self.rules.hull_cost;
+        let price = self.hull_rate;
         let worth = self.companies.iter().map(|c| c.capital(price)).sum::<f32>()
             + self.debts.iter().map(|d| d.crystals).sum::<f32>();
         if self.worth_before > 0.0 {
@@ -2233,7 +2232,7 @@ impl Galaxy {
     /// Idle companies too rich split in two; those too small join the
     /// nearest other (or, worth nothing and with nobody to join, are gone).
     pub(crate) fn split_and_join(&mut self) {
-        let price = self.rules.hull_cost;
+        let price = self.hull_rate;
         let n = self.companies.len();
         for c in 0..n {
             let co = self.companies[c].clone();
@@ -2270,7 +2269,7 @@ impl Galaxy {
         // none in range of where it's wanted.
         // Where help's most wanted, and whether there's any about: a company
         // not at work, with something to work with.
-        let price = self.rules.hull_cost;
+        let price = self.hull_rate;
         let wanted = (0..self.systems.len())
             .filter(|&s| self.unmet[s] >= 1.0)
             .max_by(|&a, &b| self.unmet[a].total_cmp(&self.unmet[b]));
