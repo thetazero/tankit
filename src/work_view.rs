@@ -3,6 +3,7 @@
 //! tanks facing the enemy's under the sky of the system they'd fight over,
 //! what you'd gain, and the contract you'd leave for it.
 
+use std::cell::Cell;
 use std::f32::consts::FRAC_PI_2;
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
@@ -61,6 +62,9 @@ pub struct Board {
     pick: Option<u32>,
     /// The filter the keys are on, when they're on the filters.
     focus: Option<usize>,
+    /// The first row in view, and how many fit, as last drawn.
+    first: Cell<usize>,
+    fit: Cell<usize>,
     /// None on offer, and the war's going on until there's one.
     pub waiting: bool,
 }
@@ -125,14 +129,17 @@ impl Board {
         self.settle();
     }
 
-    /// Sort by `SORTS[k]`: most first, then least, then not at all.
+    /// Sort by `SORTS[k]`: most first, then least, then not at all. The view
+    /// and the row picked stay put: the offers move under them.
     pub fn sort_by(&mut self, k: usize) {
         let Some(&(by, _)) = SORTS.get(k) else { return };
+        let row = self.row();
         self.sort = match self.sort {
             Some((s, true)) if s == by => Some((by, false)),
             Some((s, false)) if s == by => None,
             _ => Some((by, true)),
         };
+        self.pick = self.listed().get(row).map(|o| o.id);
     }
 
     /// Pick the `i`th listed. True if that's a change.
@@ -152,20 +159,33 @@ impl Board {
             .unwrap_or(0)
     }
 
-    /// Move the pick `by` rows, stopping at the ends. True if it moved.
-    pub fn scroll(&mut self, by: i32) -> bool {
+    /// Move the pick `by` rows, stopping at the ends.
+    fn step(&mut self, by: i32) {
         let last = self.listed().len() as i32 - 1;
-        self.pick_row((self.row() as i32 + by).clamp(0, last.max(0)) as usize)
+        self.pick_row((self.row() as i32 + by).clamp(0, last.max(0)) as usize);
+    }
+
+    /// Scroll the view `by` rows, stopping at the ends, the pick kept in it.
+    /// True if it moved.
+    pub fn scroll(&mut self, by: i32) -> bool {
+        let fit = self.fit.get().max(1);
+        let last = self.listed().len().saturating_sub(fit);
+        let was = self.first.get();
+        let first = (was as i32 + by).clamp(0, last as i32) as usize;
+        self.first.set(first);
+        let row = self.row().clamp(first, first + fit - 1);
+        self.pick = self.listed().get(row).map(|o| o.id);
+        first != was
     }
 
     /// Keys on the board. Some offer, if one's opened.
     pub fn input(&mut self, nav: Nav) -> Option<u32> {
         match (self.focus, nav) {
             (None, Nav::Up) => {
-                self.scroll(-1);
+                self.step(-1);
             }
             (None, Nav::Down) => {
-                self.scroll(1);
+                self.step(1);
             }
             (None, Nav::Left) => self.focus = Some(0),
             (None, Nav::Select) => return self.picked().map(|o| o.id),
@@ -207,9 +227,20 @@ impl Board {
                 Sort::Pay => (cols.win, Align::Right),
             };
             let tw = p.text(Vec2::new(x, y), name, &style, align);
-            let left = if align == Align::Right { x - tw } else { x };
+            // Beside its name, which way it's sorted: down for most first.
+            let (left, arrow) = match align {
+                Align::Right => (x - tw - ARROW, x - tw - ARROW * 0.5),
+                _ => (x, x + tw + ARROW * 0.5),
+            };
+            if let Some((_, most)) = self.sort.filter(|_| on) {
+                let c = Vec2::new(arrow, y + SMALL.size * 0.5);
+                let tip = if most { 1.0 } else { -1.0 };
+                let pts = [(-5.0, -4.0), (5.0, -4.0), (0.0, 4.0)]
+                    .map(|(dx, dy)| c + Vec2::new(dx, dy * tip));
+                p.poly(&pts, style.color);
+            }
             let min = Vec2::new(left, y) - Vec2::splat(UNIT);
-            let size = Vec2::new(tw, SMALL.size) + Vec2::splat(UNIT * 2.0);
+            let size = Vec2::new(tw + ARROW, SMALL.size) + Vec2::splat(UNIT * 2.0);
             hits.add(p, min, size, Hit::Sort(k));
         }
         let style = SMALL.colored(TEXT_2);
@@ -242,10 +273,13 @@ impl Board {
             p.text(at, none, &BODY.colored(TEXT_2), Align::Left);
             return;
         }
-        // As many rows as fit, the picked one among them.
+        // As many rows as fit, from where it's scrolled, the picked one among them.
         let fit = (((h - MARGIN - y) / ROW) as usize).max(1);
         let picked = self.row();
-        let first = (picked + 1).saturating_sub(fit);
+        let first = self.first.get().min(listed.len().saturating_sub(fit));
+        let first = first.clamp((picked + 1).saturating_sub(fit), picked);
+        self.first.set(first);
+        self.fit.set(fit);
         for (i, o) in listed.iter().enumerate().skip(first).take(fit) {
             let min = Vec2::new(x0 - UNIT * 2.0, y);
             let size = Vec2::new(cols.win - x0 + UNIT * 4.0, ROW);
@@ -325,6 +359,8 @@ impl Board {
 }
 
 const ROW: f32 = UNIT * 8.0;
+/// The room beside a sort's name for its arrow.
+const ARROW: f32 = UNIT * 2.5;
 
 /// Where the board's columns are.
 struct Columns {
@@ -714,8 +750,40 @@ pub mod tests {
         b.input(Nav::Select);
         b.input(Nav::Right);
         assert_eq!(b.listed().len(), 20);
-        assert!(b.scroll(50) && !b.scroll(1));
+        for _ in 0..50 {
+            b.input(Nav::Down);
+        }
         assert_eq!(b.picked().unwrap().id, 20);
+    }
+
+    /// The wheel scrolls the view; sorting leaves it, and the row picked, put.
+    #[test]
+    fn sorting_leaves_the_scroll() {
+        let mut b = Board::default();
+        b.set((1..=30).map(|id| offer(id, 0, 1)).collect(), None);
+        // The first row in view, and the last.
+        let view = |b: &Board| {
+            let (mut p, mut hits) = (Painter::new(1.0), Hits::new());
+            b.draw(&mut p, &mut hits, None, 1.0, 1600.0, 900.0);
+            let seen = |&i: &usize| hits.center_of(Hit::Row(i)).is_some();
+            let rows: Vec<usize> = (0..30).filter(seen).collect();
+            (rows[0], rows[rows.len() - 1])
+        };
+        let (_, last) = view(&b);
+        assert!(b.scroll(5));
+        assert_eq!(view(&b), (5, last + 5));
+        assert_eq!(b.row(), 5, "the pick's kept in view");
+        for k in [0, 0, 0, 1, 2, 2] {
+            b.sort_by(k);
+            assert_eq!((view(&b), b.row()), ((5, last + 5), 5));
+        }
+        assert!(b.scroll(-50) && !b.scroll(-1));
+        assert_eq!((view(&b), b.row()), ((0, last), 5));
+        assert!(b.scroll(50) && !b.scroll(1));
+        assert_eq!(view(&b), (29 - last, 29));
+        // Keys pull the view along.
+        b.step(-50);
+        assert_eq!(view(&b), (0, last));
     }
 
     #[test]
@@ -725,7 +793,7 @@ pub mod tests {
             (1..=30).map(|id| offer(id, 0, 3)).collect(),
             Some(offer(40, 1, 2)),
         );
-        b.scroll(29);
+        b.pick_row(29);
         for (w, h) in [(1600.0, 900.0), (1200.0, 900.0), (2100.0, 900.0)] {
             for side in 0..4 {
                 let (mut p, mut q) = (Painter::new(1.0), Painter::new(1.0));
