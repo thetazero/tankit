@@ -23,6 +23,9 @@
 //! keeps what it takes. Realms split at their edges and merge, by
 //! distance. Nobody watches the whole galaxy.
 //!
+//! Uthenn planets also turn out tungsten cubes, which only the Uthenn care
+//! for (`cubes`).
+//!
 //! Outposts make nothing: they're sites a world isn't taken without.
 //!
 //! **A tick:**
@@ -77,6 +80,7 @@
 
 pub mod battle;
 pub mod chart;
+pub mod cubes;
 pub mod judge;
 pub mod ledger;
 pub mod merc;
@@ -150,6 +154,10 @@ pub const SHIELD_SEATS: usize = 1;
 pub struct Rules {
     /// Crystals per hull for an FTL jump of the full range (shorter ones cost less).
     pub ftl_cost: f32,
+    /// Tungsten cubes a tick a planet of ordinary tungsten makes, and what a
+    /// cube's FTL costs, as a hull's.
+    pub cubes: f32,
+    pub cube_cost: f32,
     /// Light years a fleet, or a company's ship, flies in a tick.
     pub ftl_speed: f32,
     /// Hulls a pilot destroys in a battle, gear and numbers even: what bots
@@ -232,6 +240,8 @@ impl Default for Rules {
     fn default() -> Rules {
         Rules {
             ftl_cost: 0.01,
+            cubes: 5.0,
+            cube_cost: 0.01,
             ftl_speed: 40.0,
             kill: 6.7,
             seats: 6.0,
@@ -498,6 +508,9 @@ pub struct Galaxy {
     pub vaults: Vec<Vault>,
     /// Every planet's riches, in the vaults' order.
     pub riches: Vec<Riches>,
+    /// Every planet's tungsten cubes, likewise; and those in flight.
+    pub stashes: Vec<cubes::Stash>,
+    pub cargo: Vec<cubes::Cargo>,
     pub(crate) vault_at: Vec<u32>,
     /// What a company has lately made a tick, on average; and what they
     /// were all worth last tick.
@@ -748,6 +761,8 @@ impl Galaxy {
             hull_use: vec![0.0; count],
             incoming: Default::default(),
             vaults: Vec::new(),
+            stashes: vec![Default::default(); riches.len()],
+            cargo: Vec::new(),
             riches,
             vault_at: Vec::new(),
             profit: 0.0,
@@ -955,6 +970,7 @@ impl Galaxy {
         self.tick += 1;
         self.land();
         self.produce();
+        self.make_cubes();
         let settled = self.battles(played);
         self.mercs();
         self.reckon_holds();
@@ -1007,6 +1023,7 @@ impl Galaxy {
             sys.hulls[f] += x.hulls;
             self.moves[t][f].arrived += x.hulls;
         }
+        self.land_cubes();
         self.land_mercs();
     }
 
@@ -2347,6 +2364,11 @@ pub fn run(seed: u64, ticks: u64, out: Option<&str>) -> anyhow::Result<()> {
         worst
     );
     println!("captured {:.0} crystal with fallen systems", g.captured);
+    println!(
+        "tungsten cubes: {}, {} in the biggest stash",
+        g.stashes.iter().map(|x| x.cubes as u64).sum::<u64>(),
+        g.stashes.iter().map(|x| x.cubes).max().unwrap_or(0),
+    );
     let b = g.books;
     println!(
         "mercs: {} contracts signed, {} won, {} spent their hulls, {} ran out; realms paid {:.0} up front and {:.0} billed ({:.0} owed when due); worlds won worth {:.0} to their employers cost them {:.0}; companies split {} times and joined {}",
