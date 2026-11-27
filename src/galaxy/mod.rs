@@ -126,7 +126,7 @@ const LUCK: f32 = 0.25;
 /// made both: the galaxy's output of each is the same.
 const BOTH: f32 = 18.0 / 11.0;
 /// Hulls a foundry makes, against what it's rated at.
-const HULLS: f32 = 10.0;
+const HULLS: f32 = 5.0;
 /// Smallest sending worth the FTL (hulls).
 const MIN_SEND: u32 = 200;
 /// Most quiet ticks a step skips looking for the next war.
