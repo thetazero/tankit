@@ -408,6 +408,42 @@ fn smart_realms_budget_for_pilots() {
     );
 }
 
+/// A smart realm in a fight goes for every site, shielded or not, when it has
+/// the pilots for it, and fewer when it's outnumbered; a plain one always for
+/// the generators first.
+#[test]
+fn smart_realms_pick_their_battles() {
+    let mut g = Galaxy::with_size(1, 50, Vec2::splat(20.0), Rules::default());
+    let s = (0..g.systems.len())
+        .max_by_key(|&s| g.systems[s].sites.1 - g.systems[s].sites.0)
+        .unwrap();
+    let owner = g.systems[s].owner();
+    let other = (owner + 1) % super::PEOPLES;
+    let (a, b) = g.systems[s].sites;
+    let sites = (b - a) as usize;
+    let realm = g.found(other as u8, s as u32);
+    g.systems[s].realms[other] = realm;
+    let holder = g.systems[s].realms[owner];
+    g.systems[s].hulls = [0; SIDES];
+    g.systems[s].hulls[owner] = 20_000;
+    g.systems[s].hulls[other] = 20_000;
+    g.realms[holder as usize].tier = 0;
+    let mut go = |arm, ours: u32, theirs: u32| {
+        g.realms[realm as usize].arm = arm;
+        g.realms[realm as usize].pilots = ours;
+        g.realms[holder as usize].pilots = theirs;
+        (g.targets(s, other), g.shields_first(s, other))
+    };
+    use realm::Arm;
+    let (plain, first) = go(Arm::Plain, 5000, 5);
+    assert_eq!(plain, first);
+    assert!(first.len() < sites);
+    let (strong, _) = go(Arm::Smart, 5000, 5);
+    assert_eq!(strong.len(), sites, "everything, shielded too");
+    let (weak, _) = go(Arm::Smart, 10, 5000);
+    assert!(!weak.is_empty() && weak.len() < first.len(), "{weak:?}");
+}
+
 /// Small neighbors of one people fold together when one seat can rule them.
 #[test]
 fn small_realms_fold_together() {

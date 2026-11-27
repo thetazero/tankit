@@ -1445,6 +1445,7 @@ mod tests {
             let co = g.companies[c].clone();
             let k = co.contract.unwrap();
             g.crew = Some(co.id);
+            g.stay_on();
             let t = g.aboard(1).expect("a theater");
             let ship = t.ship.as_ref().unwrap();
             assert_eq!(ship.id, co.id);

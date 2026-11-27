@@ -836,6 +836,7 @@ impl Galaxy {
     pub(crate) fn refresh(&mut self) {
         self.keep_books();
         self.find_borders();
+        self.count_war();
     }
 
     /// Which systems have an enemy's within reach.
@@ -903,6 +904,8 @@ impl Galaxy {
         self.update_share();
         self.update_supply();
         self.send();
+        // As things stand now: what realms pick to fight over, as shown, goes by it.
+        self.count_war();
         settled
     }
 
@@ -1271,7 +1274,7 @@ impl Galaxy {
     /// Count each realm's hulls at war, so `firing` can split its pilots
     /// between its fights.
     fn share_pilots(&mut self) {
-        let mut war = vec![0; self.realms.len()];
+        self.count_war();
         for realm in &mut self.realms {
             realm.fronts = 0;
             realm.seats_now = 0.0;
@@ -1282,7 +1285,6 @@ impl Galaxy {
                 if r != NONE && self.fighting(s, f) {
                     let (mercs, crewed) = self.crewed(s, f);
                     let own = self.systems[s].hulls[f] - mercs;
-                    war[r as usize] += own;
                     // Its own seats there, past its mercs'.
                     let seats = (self.rules.seats as u32 * self.battles_in(s)[f].max(1))
                         .saturating_sub(crewed)
@@ -1290,6 +1292,19 @@ impl Galaxy {
                     let realm = &mut self.realms[r as usize];
                     realm.fronts += 1;
                     realm.seats_now += seats as f32;
+                }
+            }
+        }
+    }
+
+    /// Count each realm's hulls at war (what its pilots are split by).
+    fn count_war(&mut self) {
+        let mut war = vec![0; self.realms.len()];
+        for s in 0..self.systems.len() {
+            for f in 0..SIDES {
+                let r = self.systems[s].realms[f];
+                if r != NONE && self.fighting(s, f) {
+                    war[r as usize] += self.systems[s].hulls[f] - self.crewed(s, f).0;
                 }
             }
         }
