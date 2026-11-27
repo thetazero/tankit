@@ -393,11 +393,7 @@ fn realms_hire_companies() {
 /// before and after.
 fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     assert!(!g.companies.is_empty());
-    let start: f32 = g
-        .companies
-        .iter()
-        .map(|c| c.capital(g.rules.hull_cost))
-        .sum();
+    let start: f32 = g.companies.iter().map(|c| c.capital(g.hull_rate)).sum();
     // Realms hire only when the battle math says it's worth it: it takes a
     // while for enough to be.
     for _ in 0..400 {
@@ -420,11 +416,7 @@ fn hire_companies(mut g: Galaxy) -> (f32, f32) {
     assert!(b.signed > 10, "only {} contracts", b.signed);
     assert!(b.won > 0 && b.broken + b.expired > 0);
     assert!(b.upfront > 0.0 && b.billed > 0.0 && b.sold > 0.0);
-    let end: f32 = g
-        .companies
-        .iter()
-        .map(|c| c.capital(g.rules.hull_cost))
-        .sum();
+    let end: f32 = g.companies.iter().map(|c| c.capital(g.hull_rate)).sum();
     (start, end)
 }
 

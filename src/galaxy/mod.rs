@@ -120,8 +120,6 @@ pub const FTL_RANGE: f32 = 250.0;
 /// Most systems a system can send to (the nearest ones within range).
 const NEIGHBORS: usize = 12;
 
-/// Crystals a hull costs to build, for the Resonant (whose hulls are vessels for a crystal).
-const RESONANT_HULL_COST: f32 = 0.00005;
 /// How far either way luck takes a side's fire in a battle.
 const LUCK: f32 = 0.25;
 /// What a site that makes one thing makes of it, against one of a pair that
@@ -199,8 +197,6 @@ pub struct Rules {
     pub pilot_upkeep: f32,
     /// Crystals a ship costs its company a tick.
     pub ship_upkeep: f32,
-    /// Crystals a hull costs to build.
-    pub hull_cost: f32,
     /// Crystals it costs to train a pilot.
     pub train_cost: f32,
     /// Chance a tick a pilot retires, realm or merc.
@@ -252,7 +248,6 @@ impl Default for Rules {
             research_price: 1.2,
             pilot_upkeep: 0.02,
             ship_upkeep: 0.2,
-            hull_cost: 0.01,
             train_cost: 3.0,
             career: 0.002,
             patience: 60,
@@ -438,8 +433,6 @@ pub struct Galaxy {
     pub(crate) savings: f32,
     /// Hulls in flight.
     pub fleets: Vec<Fleet>,
-    /// The share of what foundries could make that they have lately.
-    pub(crate) foundry_use: f32,
     /// Scratch: the system whose battles are being fought, and how many each
     /// side was in as the tick's began.
     engaged: Option<(usize, [u32; SIDES])>,
@@ -694,9 +687,8 @@ impl Galaxy {
             lose_old: 0.003,
             savings: 0.0,
             fleets: Vec::new(),
-            foundry_use: 0.02,
             engaged: None,
-            hull_worth: vec![rules.hull_cost; count],
+            hull_worth: vec![0.01; count],
             hull_use: vec![0.0; count],
             incoming: Default::default(),
             vaults: Vec::new(),
@@ -708,7 +700,7 @@ impl Galaxy {
             lessons: Vec::new(),
             hire_rank: 0.0,
             worth_before: 0.0,
-            hull_rate: rules.hull_cost,
+            hull_rate: 0.01,
             fell_new: 0,
             fell_old: 0,
             border: vec![false; count],
@@ -807,7 +799,7 @@ impl Galaxy {
             merc_capital: self
                 .companies
                 .iter()
-                .map(|c| c.capital(self.rules.hull_cost))
+                .map(|c| c.capital(self.hull_rate))
                 .sum(),
             contracts: self
                 .companies
@@ -993,28 +985,17 @@ impl Galaxy {
         self.fill_vaults();
         let mut mined = vec![0.0f32; self.vaults.len()];
         let mut crystals = vec![0.0; self.realms.len()];
-        let resonant = Faction::Resonant.index();
-        let extra = |f: usize| {
-            if f == resonant {
-                RESONANT_HULL_COST
-            } else {
-                0.0
-            }
-        };
         let offset = self.rng.index(self.systems.len());
-        // What a hull's worth where: no more than building another and
-        // bringing it; and it keeps, so quiet ticks say little.
-        let most = self.rules.hull_cost + self.rules.ftl_cost;
+        // What a hull's worth where: it keeps, so quiet ticks say little.
         for (worth, seen) in self.hull_worth.iter_mut().zip(&mut self.hull_use) {
             let sense = if *seen > 0.0 {
                 self.rules.sense
             } else {
                 self.rules.sense / 100.0
             };
-            *worth += sense * (seen.min(most) - *worth);
+            *worth += sense * (*seen - *worth);
             *seen = 0.0;
         }
-        let (mut could, mut did) = (0.0f32, 0.0f32);
         for i in 0..self.systems.len() {
             // Whoever's first gets the crystal, so a different one each tick.
             let s = (i + offset) % self.systems.len();
@@ -1035,23 +1016,12 @@ impl Galaxy {
                             mined[v] += c * (1.0 - self.rules.research);
                         }
                     }
-                    // A foundry works while a hull's worth more there than it
-                    // costs, and its realm can pay for it.
-                    SiteKind::Foundry { hulls } => {
-                        let cost = hulls * (self.rules.hull_cost + extra(f));
-                        let realm = &mut self.realms[r as usize];
-                        could += hulls;
-                        if self.hull_worth[s] > self.rules.hull_cost && realm.crystals >= cost {
-                            realm.crystals -= cost;
-                            sys.building[f] += hulls;
-                            did += hulls;
-                        }
-                    }
+                    // A foundry always works, and hulls cost nothing.
+                    SiteKind::Foundry { hulls } => sys.building[f] += hulls,
                     SiteKind::Shield { .. } | SiteKind::Outpost => {}
                 }
             }
         }
-        self.foundry_use += 0.02 * (did / could.max(1.0) - self.foundry_use);
         // The yards deliver whole hulls: those done, the rest still building.
         for (sys, moves) in self.systems.iter_mut().zip(&mut self.moves) {
             for f in 0..SIDES {
@@ -1505,6 +1475,13 @@ impl Galaxy {
     /// side out of hulls fires no more.
     fn clash(&self, s: usize, fire: &[f32; SIDES], sides: &[usize]) -> [[f32; SIDES]; SIDES] {
         let hulls = self.systems[s].hulls;
+        let armor: [f32; SIDES] = std::array::from_fn(|f| {
+            if sides.contains(&f) {
+                crate::economy::armor_factor(self.gear(s, f))
+            } else {
+                1.0
+            }
+        });
         let mut by = [[0.0f32; SIDES]; SIDES];
         for &g in sides {
             let enemies = || sides.iter().copied().filter(move |&f| f != g);
@@ -1513,8 +1490,7 @@ impl Galaxy {
                 continue;
             }
             for f in enemies() {
-                let armor = crate::economy::armor_factor(self.gear(s, f));
-                by[f][g] = self.rules.kill * fire[g] * hulls[f] as f32 / targets / armor;
+                by[f][g] = self.rules.kill * fire[g] * hulls[f] as f32 / targets / armor[f];
             }
         }
         // How much of the battle each side's hulls last it.

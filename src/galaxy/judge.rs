@@ -83,7 +83,7 @@ fn report(g: &Galaxy, last: &super::merc::Books, was: f64, dt: f64) {
     let cap: f32 = g
         .companies
         .iter()
-        .map(|c| c.capital(g.rules.hull_cost))
+        .map(|c| c.capital(g.hull_rate))
         .sum::<f32>()
         + owed;
     println!(
@@ -181,7 +181,6 @@ fn tweak(rules: &mut Rules) {
             "research" => rules.research = x,
             "ftl_cost" => rules.ftl_cost = x,
             "ship_cost" => rules.ship_cost = x,
-            "hull_cost" => rules.hull_cost = x,
             "train_cost" => rules.train_cost = x,
             "career" => rules.career = x,
             "ship_upkeep" => rules.ship_upkeep = x,
@@ -268,11 +267,7 @@ fn raids(g: &Galaxy, last: &super::merc::Books) {
         .collect();
     rich.sort_by(f32::total_cmp);
     let at = |q: f32| rich[((rich.len() - 1) as f32 * q) as usize];
-    println!(
-        "         hires come to, of expected: {:.2?}; foundries at work {:.1}%",
-        g.hire_trust,
-        100.0 * g.foundry_use
-    );
+    println!("         hires come to, of expected: {:.2?}", g.hire_trust);
     println!(
         "         raids: looks nowhere/no crew/can't pay/not worth/went {looks:?}; spent {} late {}; each: there {:.0} expected {:.0} took {:.0} hulls {:.0} lost {:.0} ticks {:.1}; crew quoted {:.0} had {:.0}, foes {:.0} then {:.0}, firing {:.0} then {:.0} | system vaults p50/90/99 {:.0}/{:.0}/{:.0}",
         b.raid_spent - last.raid_spent,

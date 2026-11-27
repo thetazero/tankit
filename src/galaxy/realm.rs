@@ -123,15 +123,13 @@ impl Realm {
     pub fn keep_pilots(&mut self, rules: &super::Rules, retired: u32, free: u32) -> u32 {
         // What its fights showed this tick.
         self.pilot_worth += rules.sense * (self.pilot_use - self.pilot_worth);
-        // (a hull's worth no more than building another and bringing it)
-        let most = rules.hull_cost + rules.ftl_cost;
         // (and it keeps till it's wanted, so quiet ticks say little)
         let sense = if self.hull_use > 0.0 {
             rules.sense
         } else {
             rules.sense / 10.0
         };
-        self.hull_worth += sense * (self.hull_use.min(most) - self.hull_worth);
+        self.hull_worth += sense * (self.hull_use - self.hull_worth);
         (self.pilot_use, self.hull_use) = (0.0, 0.0);
         let need = self.seats_now + self.seats_next;
         self.seats += (need - self.seats).max(rules.sense * (need - self.seats));
