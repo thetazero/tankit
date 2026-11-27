@@ -49,6 +49,8 @@ pub struct Skeleton {
     pub repair_spots: Vec<Vec2>,
     /// What joins its great buildings to its river.
     pub conduits: Vec<super::conduit::Conduit>,
+    /// Its river's side channels, to the houses.
+    pub rills: Vec<super::rill::Rill>,
     /// Where roads cross valleys and ridges, and railroads washes.
     pub crossings: Vec<super::crossing::Crossing>,
     /// Railroads.

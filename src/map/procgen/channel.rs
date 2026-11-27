@@ -24,7 +24,7 @@ const BED: f32 = 3.5;
 /// How wide its sloped banks are, from the river's edge up to the quay.
 pub const BANK: f32 = 12.0;
 /// How far their lining's drawn over the ground.
-const LINING: f32 = 0.06;
+pub const LINING: f32 = 0.06;
 /// How far past its banks the quays run, level, and then how far it takes
 /// them to meet the land.
 pub const QUAY: f32 = 13.0;
@@ -33,6 +33,8 @@ const BLEND: f32 = 9.0;
 const DECK: f32 = 0.8;
 pub const RISE: f32 = 0.9;
 pub const STEP: f32 = 4.0;
+/// Every how many steps there's a lamp post.
+const LAMPS: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Bridge {
@@ -287,6 +289,18 @@ impl Channel {
         self.local(p).1.abs() < self.half + BANK + margin
     }
 
+    /// `t`, or the nearest along from it that's `room` off every lamp post on
+    /// its banks.
+    pub fn off_lamps(&self, t: f32, room: f32) -> f32 {
+        let apart = LAMPS as f32 * STEP;
+        let d = (t - self.from - 0.5 * STEP + apart * 0.5).rem_euclid(apart) - apart * 0.5;
+        if d.abs() < room {
+            t - d + room.copysign(d)
+        } else {
+            t
+        }
+    }
+
     /// A bridge over it, `t` along and `half` its width, unless one's there
     /// already: which one it is.
     pub fn bridge(&mut self, t: f32, half: f32) -> usize {
@@ -411,7 +425,7 @@ impl Channel {
                 if spanned {
                     continue;
                 }
-                if k % 5 == 0 {
+                if k % LAMPS == 0 {
                     let post = self.point(t, e * (self.half + BANK + 0.6));
                     put(
                         post,

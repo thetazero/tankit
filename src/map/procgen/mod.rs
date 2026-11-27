@@ -37,6 +37,7 @@ pub mod land;
 pub mod memo;
 pub mod mine;
 mod resonant;
+mod rill;
 pub mod setting;
 pub mod shield;
 pub mod skeleton;
@@ -315,6 +316,7 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
     }
     if let Some(c) = &sk.land.channel {
         c.build(&mut map, sk.size);
+        rill::build(&mut map, &sk);
         map.rivers = std::sync::Arc::new(vec![c.river()]);
     }
     for (k, b) in sk.bases.iter().enumerate() {
@@ -1155,6 +1157,52 @@ mod tests {
         assert!(seen >= 3, "{seen}");
     }
 
+    /// Side channels run from the river into the houses, each from the river
+    /// itself or another that does, and none through a house or a base it
+    /// isn't going to.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "slow unoptimized: run with cargo test --release"
+    )]
+    fn side_channels_feed_the_houses() {
+        for seed in 0..6 {
+            let sk = skeleton(&crate::city_spec(seed, Look::Ithessar));
+            let c = sk.land.channel.as_ref().unwrap();
+            let (mut fed, mut mains, mut sources) = (0, 0, 0);
+            for r in &sk.rills {
+                let (start, end) = (r.points[0], r.points[r.points.len() - 1]);
+                match r.intake {
+                    Some(_) => {
+                        sources += 1;
+                        mains += !r.feeds as usize;
+                        assert!(c.wet(start, 0.0), "seed {seed}: {start} isn't the river");
+                    }
+                    None => assert!(
+                        sk.rills
+                            .iter()
+                            .any(|o| o.intake.is_some() && o.points.contains(&start)),
+                        "seed {seed}: a spur off nothing at {start}"
+                    ),
+                }
+                let to = sk.lots.iter().position(|l| l.footprint.center == end);
+                assert_eq!(to.is_some(), r.feeds, "seed {seed}: at {end}");
+                fed += r.feeds as usize;
+                for p in &r.points {
+                    for (k, l) in sk.lots.iter().enumerate() {
+                        assert!(
+                            Some(k) == to || l.footprint.distance(*p) > 0.0,
+                            "seed {seed}: through a house at {p}"
+                        );
+                    }
+                    assert!(sk.bases.iter().all(|b| !b.contains(*p, 0.0)));
+                }
+            }
+            println!("seed {seed}: {sources} off the river ({mains} up streets), {fed} houses fed");
+            assert!(mains >= 4 && fed >= 20, "seed {seed}: {mains} {fed}");
+        }
+    }
+
     /// Bots drive over a river city's bridges, on their own and two meeting
     /// head on, without stopping on the way, climbing a parapet or going in.
     #[test]
@@ -1384,7 +1432,9 @@ mod tests {
                         p.distance(b.ends[0] + d * t) < b.half
                     }) {
                         [250, 250, 250]
-                    } else if c.local(p).1.abs() < c.half {
+                    } else if c.local(p).1.abs() < c.half
+                        || (sk.rills.iter().flat_map(|r| &r.points)).any(|q| q.distance(p) < 1.2)
+                    {
                         [255, 40, 150]
                     } else if c.wet(p, 0.0) {
                         [60, 60, 90]
