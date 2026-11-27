@@ -73,10 +73,10 @@ pub struct NavGrid {
     /// Drivable slabs: floors over the ground. Level ones (decks, roofs),
     /// and the ramps up onto those from the ground at their ends.
     slabs: Vec<OBox>,
-    /// For a hover hull: the rivers it rides on, and which cells they're by
-    /// (looking one up is slow, and most of a map's nowhere near).
+    /// For a hover hull: the rivers it rides on, and the one each cell's by,
+    /// with the stretch of it that's nearest (looking one up is slow).
     rivers: std::sync::Arc<Vec<crate::map::river::River>>,
-    wet: Vec<bool>,
+    wet: Vec<Option<(u32, u32)>>,
 }
 
 /// Which of `floors` is nearest height `h` (the higher, if two are), and
@@ -146,9 +146,11 @@ impl NavGrid {
         if hover && !map.rivers.is_empty() {
             nav.wet = (0..n * n)
                 .map(|i| {
-                    let near = RIVER_MARGIN + NAV_CELL;
-                    let c = nav.center(i);
-                    map.rivers.iter().any(|r| r.surface(c, near).is_some())
+                    let (near, c) = (RIVER_MARGIN + NAV_CELL, nav.center(i));
+                    map.rivers.iter().enumerate().find_map(|(k, r)| {
+                        let (_, seg) = r.surface_in(c, near, 0..r.points.len())?;
+                        Some((k as u32, seg as u32))
+                    })
                 })
                 .collect();
             nav.rivers = map.rivers.clone();
@@ -379,13 +381,14 @@ impl NavGrid {
         let solid = self.solid.as_ref().and_then(|s| s.top(p));
         let g =
             solid.unwrap_or_else(|| self.terrain.as_ref().map_or(0.0, |t| t.height_at(p.x, p.y)));
-        if !self.wet.get(self.cell(p)).is_some_and(|w| *w) {
+        let Some(&Some((k, seg))) = self.wet.get(self.cell(p)) else {
             return g;
-        }
-        self.rivers
-            .iter()
-            .filter_map(|r| r.surface(p, RIVER_MARGIN))
-            .fold(g, f32::max)
+        };
+        // (Only the stretch by this cell.)
+        let (r, seg) = (&self.rivers[k as usize], seg as usize);
+        let by = seg.saturating_sub(3)..seg + 5;
+        r.surface_in(p, RIVER_MARGIN, by)
+            .map_or(g, |(y, _)| g.max(y))
     }
 
     /// The floors at a point, the highest first (NaN past the last): those

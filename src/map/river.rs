@@ -21,18 +21,31 @@ pub struct River {
 impl River {
     /// Its surface's height at `p`, if `p` is over it (within `margin` m).
     pub fn surface(&self, p: Vec2, margin: f32) -> Option<f32> {
+        self.surface_in(p, margin, 0..self.points.len())
+            .map(|s| s.0)
+    }
+
+    /// `surface`, looking only at the stretch between the points `of`, and
+    /// which point the stretch nearest `p` starts at.
+    pub fn surface_in(
+        &self,
+        p: Vec2,
+        margin: f32,
+        of: std::ops::Range<usize>,
+    ) -> Option<(f32, usize)> {
         let reach = self.half + margin;
-        let mut best: Option<(f32, f32)> = None;
-        for w in self.points.windows(2) {
+        let mut best: Option<(f32, f32, usize)> = None;
+        let of = of.start..of.end.min(self.points.len());
+        for (k, w) in self.points[of.clone()].windows(2).enumerate() {
             let (a, b) = (Vec2::new(w[0].x, w[0].z), Vec2::new(w[1].x, w[1].z));
             let d = b - a;
             let t = ((p - a).dot(d) / d.length_squared().max(1e-6)).clamp(0.0, 1.0);
             let off = p.distance_squared(a + d * t);
-            if off < reach * reach && best.is_none_or(|(o, _)| off < o) {
-                best = Some((off, w[0].y + (w[1].y - w[0].y) * t));
+            if off < reach * reach && best.is_none_or(|(o, _, _)| off < o) {
+                best = Some((off, w[0].y + (w[1].y - w[0].y) * t, of.start + k));
             }
         }
-        best.map(|(_, y)| y)
+        best.map(|(_, y, k)| (y, k))
     }
 
     /// The stretch of it nearest `at`: `n` points, every `step`th of its own,
