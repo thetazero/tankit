@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{FTL_RANGE, Galaxy, SiteKind};
 use crate::faction::Faction;
+use crate::map::procgen::hoard::Stretch;
 
 /// Fewest cubes that make a hoard, and how many times what worlds with any
 /// have on average: the hoards are the biggest stashes there are, however
@@ -56,7 +57,9 @@ impl Galaxy {
 
     /// The sites of system `s` that are hoards, whoever holds them: on each
     /// planet with that many cubes, its first outpost, if it has one.
-    pub fn hoards(&self, s: usize) -> Vec<usize> {
+    /// How much of a hoard goes by how many more there are than that: where
+    /// most are, the network's busiest.
+    pub fn hoards(&self, s: usize) -> Vec<(usize, Stretch)> {
         let stashes = self.stashes_of(s);
         // (Few systems are worth counting every stash there is for.)
         if stashes.iter().all(|x| x.cubes < HOARD) {
@@ -66,10 +69,16 @@ impl Galaxy {
         (0..stashes.len())
             .filter(|&p| stashes[p].cubes >= size)
             .filter_map(|p| {
-                self.site_range(s).find(|&i| {
+                let i = self.site_range(s).find(|&i| {
                     let site = &self.sites[i];
                     site.planet as usize == p && site.kind == SiteKind::Outpost
-                })
+                })?;
+                let stretch = match stashes[p].cubes as f32 / size as f32 {
+                    x if x < 1.35 => Stretch::Front,
+                    x if x < 1.9 => Stretch::Fork,
+                    _ => Stretch::Trunk,
+                };
+                Some((i, stretch))
             })
             .collect()
     }
@@ -78,10 +87,43 @@ impl Galaxy {
     pub fn site_name(&self, i: usize) -> &'static str {
         // (Systems' sites lie in their order.)
         let s = self.systems.partition_point(|x| x.sites.1 as usize <= i);
-        if self.hoards(s).contains(&i) {
+        if self.hoards(s).iter().any(|h| h.0 == i) {
             return super::theater::HOARD;
         }
         super::theater::kind_name(self.sites[i].kind)
+    }
+
+    /// The cubes the Uthenn would have with all of system `s` that they
+    /// haven't without: those there, and those they'd make in `ticks`. (A
+    /// planet's cubes go with its vault, with the whole planet.)
+    pub(crate) fn cubes_to_win(&self, s: usize, ticks: f32) -> f32 {
+        let uthenn = Faction::Uthenn.index();
+        let makes = self.makes_cubes(s);
+        let a = self.vault_at[s] as usize;
+        (0..self.systems[s].planets as usize)
+            .map(|p| {
+                let mut cubes = 0.0;
+                if self.vaults[a + p].side as usize != uthenn {
+                    cubes += self.stashes[a + p].cubes as f32;
+                }
+                if !makes[p] {
+                    cubes += self.rules.cubes * self.riches[a + p].tungsten * ticks;
+                }
+                cubes
+            })
+            .sum()
+    }
+
+    /// Which of system `s`'s planets make cubes: those with no production
+    /// site that isn't the Uthenn's.
+    fn makes_cubes(&self, s: usize) -> [bool; 4] {
+        let uthenn = Faction::Uthenn.index();
+        let sys = &self.systems[s];
+        let mut kept = [true; 4];
+        for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+            kept[site.planet as usize] &= !site.kind.produces() || site.owner as usize == uthenn;
+        }
+        kept
     }
 
     /// Uthenn planets turn out their cubes.
@@ -91,12 +133,7 @@ impl Galaxy {
             if sys.held[uthenn] == 0 {
                 continue;
             }
-            // Planets with a production site that's someone else's.
-            let mut kept = [true; 4];
-            for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
-                kept[site.planet as usize] &=
-                    !site.kind.produces() || site.owner as usize == uthenn;
-            }
+            let kept = self.makes_cubes(s);
             let a = self.vault_at[s] as usize;
             for p in (0..sys.planets as usize).filter(|&p| kept[p]) {
                 let stash = &mut self.stashes[a + p];
@@ -231,6 +268,7 @@ mod tests {
         let size = g.hoard_size();
         let (mut hoards, mut stashed, mut grounds) = (0, 0, std::collections::HashSet::new());
         let mut contracts = std::collections::HashSet::new();
+        let mut stretches = std::collections::HashSet::new();
         for s in 0..g.systems.len() {
             let t = g.theater_at(s, 0);
             stashed += g.stashes_of(s).iter().filter(|x| x.cubes > 0).count();
@@ -238,14 +276,18 @@ mod tests {
                 assert_eq!(site.map_seed, old.map_seed);
                 assert_eq!(site.kind_name(), g.site_name(site.index));
                 let cubes = g.stashes_of(s)[site.planet as usize].cubes;
-                if !site.hoard {
+                let Some(stretch) = site.hoard else {
                     assert_eq!(site.mission, old.mission);
-                    assert!(!matches!(site.map_kind(), MapKind::Hoard(_)));
+                    assert!(!matches!(site.map_kind(), MapKind::Hoard(..)));
                     continue;
-                }
+                };
+                stretches.insert(stretch);
                 assert!(cubes >= size, "{cubes} of {size}");
                 assert_eq!(site.kind, SiteKind::Outpost);
-                assert_eq!(site.map_kind(), MapKind::Hoard(site.class.ground()));
+                assert_eq!(
+                    site.map_kind(),
+                    MapKind::Hoard(site.class.ground(), stretch)
+                );
                 assert_eq!(
                     (site.kind_name(), site.short_name()),
                     ("TUNGSTEN HOARD", "HOARD")
@@ -261,18 +303,19 @@ mod tests {
                 };
                 let posts = on(|x| x.kind == SiteKind::Outpost);
                 let want = (x.cubes >= size && posts > 0) as usize;
-                assert_eq!(on(|x| x.hoard), want, "{} cubes", x.cubes);
+                assert_eq!(on(|x| x.hoard.is_some()), want, "{} cubes", x.cubes);
             }
         }
         assert!(hoards > 0 && hoards * 4 < stashed, "{hoards} of {stashed}");
         assert_eq!((grounds.len(), contracts.len()), (3, 2));
+        assert_eq!(stretches.len(), 3);
         // It stays one whoever takes it.
         let s = (0..g.systems.len())
             .find(|&s| !g.hoards(s).is_empty())
             .unwrap();
-        let i = g.hoards(s)[0];
+        let i = g.hoards(s)[0].0;
         g.sites[i].owner = Faction::Imperium.index() as u8;
-        assert_eq!(g.hoards(s)[0], i);
+        assert_eq!(g.hoards(s)[0].0, i);
     }
 
     /// Cubes fly for crystal, only as many as there are and can be paid for,

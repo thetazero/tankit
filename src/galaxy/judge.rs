@@ -5,9 +5,41 @@
 use super::realm::Arm;
 use super::{Galaxy, REGION, Rules, SIDES, SYSTEMS};
 
+/// Of the Uthenn's, the share of systems, of cubes controlled, and of the
+/// tungsten held, each arm's realms have, %; and the cubes all told.
+fn uthenn(g: &Galaxy) -> [[f64; 3]; 4] {
+    let f = crate::faction::Faction::Uthenn.index();
+    let mut out = [[0.0; 3]; 4];
+    for (s, sys) in g.systems.iter().enumerate() {
+        let r = sys.realms[f];
+        if r == super::realm::NONE {
+            continue;
+        }
+        let arm = g.realms[r as usize].arm as usize;
+        if g.holder(s) == r {
+            out[0][arm] += 1.0;
+        }
+        let vaults = g
+            .vaults_of(s)
+            .iter()
+            .zip(g.stashes_of(s))
+            .zip(g.riches_of(s));
+        for ((_, x), rich) in vaults.filter(|((v, _), _)| v.side as usize == f && v.realm == r) {
+            out[1][arm] += x.cubes as f64;
+            out[2][arm] += rich.tungsten as f64;
+        }
+    }
+    out[3] = out[1];
+    for k in 0..3 {
+        let all = out[k].iter().sum::<f64>().max(1.0);
+        out[k] = out[k].map(|x| 100.0 * x / all);
+    }
+    out
+}
+
 /// The share of systems each arm's realms hold, %.
-fn holdings(g: &Galaxy) -> [f64; 2] {
-    let mut held = [0.0; 2];
+fn holdings(g: &Galaxy) -> [f64; 3] {
+    let mut held = [0.0; 3];
     for (_, r) in g.living() {
         held[r.arm as usize] += r.systems as f64;
     }
@@ -404,10 +436,12 @@ pub fn replay(seeds: &[u64]) {
 }
 
 pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
-    let mut moved: Vec<[f64; 2]> = Vec::new();
+    let mut moved: Vec<[f64; 3]> = Vec::new();
+    let mut theirs: Vec<[[f64; 3]; 4]> = Vec::new();
     for &seed in seeds {
         let turns = if arms { Arm::ALL.len() } else { 1 };
-        let mut sum = [0.0; 2];
+        let mut sum = [0.0; 3];
+        let mut cubes = [[0.0; 3]; 4];
         for turn in 0..turns {
             let mut rules = Rules::default();
             tweak(&mut rules);
@@ -419,7 +453,8 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             // The same galaxy, the arms handed round: what's luck in who's
             // which evens out then.
             for r in &mut g.realms {
-                r.arm = Arm::ALL[(r.arm as usize + turn) % Arm::ALL.len()];
+                let arms = Arm::of(r.faction as usize);
+                r.arm = arms[(r.arm as usize + turn) % arms.len()];
             }
             // `WARM=ticks`: no realm's smart till the war's that old.
             let warm = std::env::var("WARM")
@@ -438,7 +473,8 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     g.tick_once();
                 }
                 for (i, r) in g.realms.iter_mut().enumerate() {
-                    r.arm = arms[i % arms.len()];
+                    let theirs = Arm::of(r.faction as usize);
+                    r.arm = theirs[arms[i % arms.len()] as usize % theirs.len()];
                 }
             }
             let t0 = std::time::Instant::now();
@@ -446,6 +482,7 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
             let mut spans = Spans::of(&g);
             g.step();
             let start = holdings(&g);
+            let began = uthenn(&g);
             while g.tick < ticks + warm.unwrap_or(0) {
                 g.tick_once();
                 spans.watch(&g);
@@ -454,7 +491,13 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                     raids(&g, &last);
                     self::arms(&g);
                     spans.report(&g);
-                    println!("         holdings {:.1?}", holdings(&g));
+                    println!(
+                        "         holdings {:.1?}; Uthenn arms' systems {:.1?}, cubes {:.1?}, tungsten {:.1?}",
+                        holdings(&g),
+                        uthenn(&g)[0],
+                        uthenn(&g)[1],
+                        uthenn(&g)[2]
+                    );
                     let of = |k: usize| g.books.trade[k] - last.trade[k];
                     let n = of(0).max(1.0);
                     let [loot, paid, out, wages, sail] = [1, 2, 3, 4, 5].map(|k| of(k) / n);
@@ -467,16 +510,37 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                 }
             }
             let end = holdings(&g);
-            for a in 0..2 {
+            let ended = uthenn(&g);
+            for k in 0..4 {
+                for a in 0..3 {
+                    cubes[k][a] += ended[k][a] / turns as f64;
+                }
+            }
+            let made: f64 = g.stashes.iter().map(|x| x.cubes as f64).sum();
+            println!(
+                "  cubes everywhere {:.2} M, the Uthenn's {:.2} M",
+                made / 1e6,
+                ended[3].iter().sum::<f64>() / 1e6
+            );
+            println!(
+                "  Uthenn systems {:.1?} from {:.1?}, cubes {:.1?} M, tungsten {:.1?} from {:.1?}",
+                ended[0],
+                began[0],
+                ended[3].map(|x| x / 1e6),
+                ended[2],
+                began[2]
+            );
+            for a in 0..3 {
                 sum[a] += (end[a] - start[a]) / turns as f64;
             }
             println!(
                 "  arms {:+.2?} points; {:.1} ms a tick",
-                [0, 1].map(|a| end[a] - start[a]),
+                [0, 1, 2].map(|a| end[a] - start[a]),
                 t0.elapsed().as_secs_f64() * 1e3 / g.tick as f64
             );
         }
         moved.push(sum);
+        theirs.push(cubes);
     }
     if arms {
         let stat = |v: &[f64]| {
@@ -492,6 +556,14 @@ pub fn run(ticks: u64, seeds: &[u64], arms: bool) {
                 "ARMS {}: {mean:+.2} points (se {se:.2}) {v:.2?}",
                 arm.name()
             );
+            for (k, what) in ["systems", "cubes", "tungsten"].into_iter().enumerate() {
+                let v: Vec<f64> = theirs.iter().map(|m| m[k][arm as usize]).collect();
+                let (mean, se) = stat(&v);
+                println!(
+                    "ARMS Uthenn {}: {mean:.1}% of their {what} (se {se:.1})",
+                    arm.name()
+                );
+            }
         }
     }
 }

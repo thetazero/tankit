@@ -163,10 +163,16 @@ pub(in crate::map) fn snow(map: &mut Map, sk: &Skeleton, color: Vec3, on: impl F
         if !bare {
             continue;
         }
+        // (A hoard's blocks are drawn grown: well in from their edges.)
+        let inset = if o.half.max_element() > 2.9 && o.side_mat == Material::Metal && !o.solid {
+            0.25
+        } else {
+            0.06
+        };
         let c = top + up * (DEEP * 0.5 - 0.02);
         lying.push(OBox {
             center: Vec2::new(c.x, c.z),
-            half: o.half - Vec2::splat(0.06),
+            half: o.half - Vec2::splat(inset),
             y0: c.y - DEEP * 0.5,
             y1: c.y + DEEP * 0.5,
             color,

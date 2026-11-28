@@ -12,6 +12,8 @@ mod tests;
 
 use glam::Vec3;
 
+pub use plan::Stretch;
+
 use super::Spec;
 use super::foundry::{self, Ground};
 use super::memo::{Memo, SKELETONS};
@@ -42,8 +44,11 @@ fn lay_out(spec: &Spec) -> Skeleton {
 }
 
 /// What part of the network `spec`'s is on.
-fn stretch(spec: &Spec) -> plan::Stretch {
-    plan::Stretch::ALL[(spec.seed % 3) as usize]
+fn stretch(spec: &Spec) -> Stretch {
+    match spec.biome {
+        super::Biome::Hoard(_, stretch) => stretch,
+        _ => Stretch::default(),
+    }
 }
 
 /// `spec`'s hoard undressed.

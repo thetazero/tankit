@@ -1073,7 +1073,11 @@ mod tests {
     )]
     fn hoards_hardly_z_fight() {
         use crate::map::procgen::foundry::Ground;
-        let hoard = |seed, g| crate::make_map(crate::MapKind::Hoard(g), seed);
+        use crate::map::procgen::hoard::Stretch;
+        let hoard = |seed: u64, g| {
+            let s = Stretch::ALL[seed as usize];
+            crate::make_map(crate::MapKind::Hoard(g, s), seed)
+        };
         hardly_z_fight([
             ("hoard desert", hoard(0, Ground::Desert)),
             ("hoard tundra", hoard(1, Ground::Tundra)),

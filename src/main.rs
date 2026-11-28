@@ -61,7 +61,7 @@ tankit [OPTIONS]
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
                           (generated: see --look and --ground), a tungsten hoard
-                          (generated, the Uthenn's: see --ground), or the mine (a generated
+                          (generated, the Uthenn's: see --ground; by its map seed, a front, a fork or the trunk), or the mine (a generated
                           crystal mine: caves, rails and stacked levels; see --look and --ground), the desert (generated open
                           desert) or the shield camp (the same, a shield generator in its landmark's slot; see --ground)
   --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, hoard, mine, desert, shield-camp) builds (default: the --seed)
@@ -99,6 +99,9 @@ tankit [OPTIONS]
   --galaxy <ticks>        run the galaxy's forever war on its own (from --seed) for that many ticks,
                           print each faction's share and how long a tick takes; with --shot,
                           save a chart of the run there
+  --score <ticks> <seeds> [quick]
+                          how everyone in the war does by what they're after (profit, and
+                          what each people wants), realms by arm; quick runs each galaxy once
   --improve <faction>     (with --arena) that side's bots run the current brain
   --front                 (with --arena or --shot) each round is a battle drawn from a galaxy at war
                           (from --seed; never the one you play in): the sides fight on hull
@@ -329,7 +332,7 @@ impl Args {
             (true, MapKind::Foundry(l, g)) => {
                 map::procgen::greybox(&foundry_spec(self.map_seed, l, g))
             }
-            (true, MapKind::Hoard(g)) => map::procgen::greybox(&hoard_spec(self.map_seed, g)),
+            (true, MapKind::Hoard(g, s)) => map::procgen::greybox(&hoard_spec(self.map_seed, g, s)),
             (true, MapKind::Depot(l, g)) => map::procgen::greybox(&depot_spec(self.map_seed, l, g)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
             (true, MapKind::Reservoir) => map::procgen::greybox(&reservoir_spec(self.map_seed)),
@@ -376,9 +379,9 @@ pub enum MapKind {
     /// A rail depot, in someone's style on some kind of ground. Generated:
     /// a different one for each map seed.
     Depot(map::procgen::Look, map::procgen::foundry::Ground),
-    /// A hoard of the Uthenn's tungsten cubes, on some kind of ground.
+    /// A stretch of the Uthenn's hoard of tungsten cubes, on some kind of ground.
     /// Generated: a different one for each map seed.
-    Hoard(map::procgen::foundry::Ground),
+    Hoard(map::procgen::foundry::Ground, map::procgen::hoard::Stretch),
     /// A crystal mine in an escarpment, in someone's style on some kind of
     /// ground, on three levels. Generated: a different mine for each map seed.
     Mine(map::procgen::Look, map::procgen::foundry::Ground),
@@ -403,7 +406,7 @@ impl MapKind {
             MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) => s == Setting::Desert,
             MapKind::Foundry(_, g)
             | MapKind::Depot(_, g)
-            | MapKind::Hoard(g)
+            | MapKind::Hoard(g, _)
             | MapKind::Mine(_, g)
             | MapKind::ShieldCamp(g, _)
             | MapKind::Sanctum(g) => g == Ground::Desert,
@@ -420,7 +423,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
         MapKind::Mine(l, g) => map::procgen::map(&mine_spec(seed, l, g)),
         MapKind::Depot(l, g) => map::procgen::map(&depot_spec(seed, l, g)),
-        MapKind::Hoard(g) => map::procgen::map(&hoard_spec(seed, g)),
+        MapKind::Hoard(g, s) => map::procgen::map(&hoard_spec(seed, g, s)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
         MapKind::Reservoir => map::procgen::map(&reservoir_spec(seed)),
         MapKind::ShieldCamp(ground, g) => map::procgen::map(&shield_camp_spec(seed, ground, g)),
@@ -527,10 +530,14 @@ pub fn depot_spec(
 
 /// The tungsten hoard `seed` names on `ground`: the Uthenn's, the Ithessar
 /// come for it.
-pub fn hoard_spec(seed: u64, ground: map::procgen::foundry::Ground) -> map::procgen::Spec {
+pub fn hoard_spec(
+    seed: u64,
+    ground: map::procgen::foundry::Ground,
+    stretch: map::procgen::hoard::Stretch,
+) -> map::procgen::Spec {
     map::procgen::Spec {
         seed,
-        biome: map::procgen::Biome::Hoard(ground),
+        biome: map::procgen::Biome::Hoard(ground, stretch),
         look: map::procgen::Look::Uthenn,
         sides: vec![faction::Faction::Uthenn, faction::Faction::Ithessar],
         centerpiece: map::procgen::Centerpiece::Monument,
@@ -879,7 +886,10 @@ fn parse_args() -> Result<Args> {
                         map::procgen::foundry::Ground::Desert,
                     )
                 }
-                Some("hoard") => map_kind = MapKind::Hoard(map::procgen::foundry::Ground::Desert),
+                Some("hoard") => {
+                    map_kind =
+                        MapKind::Hoard(map::procgen::foundry::Ground::Desert, Default::default())
+                }
                 Some("mine") => {
                     map_kind = MapKind::Mine(
                         map::procgen::Look::Ithessar,
@@ -1035,6 +1045,18 @@ fn parse_args() -> Result<Args> {
                         .parse()?,
                 )
             }
+            "--score" => {
+                // --score <ticks> <seed,seed..> [quick]
+                let ticks = args.next().context("--score needs a tick count")?.parse()?;
+                let seeds: Vec<u64> = args
+                    .next()
+                    .context("--score needs seeds")?
+                    .split(',')
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()?;
+                galaxy::score::run(ticks, &seeds, args.next().as_deref() == Some("quick"));
+                std::process::exit(0);
+            }
             "--judge" => {
                 // --judge <ticks> <seed,seed..> [arms|replay]
                 let ticks = args.next().context("--judge needs a tick count")?.parse()?;
@@ -1180,10 +1202,14 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    // (A site's goes by the war's count of its cubes.)
+    if let MapKind::Hoard(_, s) = &mut map_kind {
+        *s = map::procgen::hoard::Stretch::ALL[(map_seed % 3) as usize];
+    }
     if let (
         MapKind::Foundry(_, g)
         | MapKind::Depot(_, g)
-        | MapKind::Hoard(g)
+        | MapKind::Hoard(g, _)
         | MapKind::Mine(_, g)
         | MapKind::ShieldCamp(g, _)
         | MapKind::Sanctum(g),

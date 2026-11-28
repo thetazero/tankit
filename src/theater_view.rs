@@ -1704,7 +1704,7 @@ fn glyph(p: &mut Painter, at: Vec2, s: &SiteView, color: Rgba) {
             1.5,
             color,
         );
-    } else if s.hoard {
+    } else if s.hoard.is_some() {
         // A cube, seen from over a corner.
         let on = |x: f32, y: f32| at + Vec2::new(x, y) * 7.0;
         let (w, h) = (0.87, 0.5);

@@ -28,7 +28,7 @@ pub(crate) fn spots(kind: MapKind) -> &'static [(f32, f32, f32)] {
         MapKind::City(..) | MapKind::ShieldSite(..) => &[],
         // Generated: each foundry picks its own (by each side's spawns,
         // looking at the great hall).
-        MapKind::Foundry(..) | MapKind::Depot(..) | MapKind::Hoard(_) => &[],
+        MapKind::Foundry(..) | MapKind::Depot(..) | MapKind::Hoard(..) => &[],
         // Generated: each mine picks its own (the Face, the adit's mouth
         // and the bridge out of it, from either side of the bridge's end).
         MapKind::Mine(..) => &[],
@@ -266,7 +266,10 @@ mod tests {
                 1,
             ),
             (
-                MapKind::Hoard(crate::map::procgen::foundry::Ground::Tundra),
+                MapKind::Hoard(
+                    crate::map::procgen::foundry::Ground::Tundra,
+                    Default::default(),
+                ),
                 1,
             ),
             (

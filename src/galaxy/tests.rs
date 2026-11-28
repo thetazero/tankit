@@ -408,6 +408,40 @@ fn smart_realms_budget_for_pilots() {
     );
 }
 
+/// Only the Uthenn have realms after what they want, and what those want of
+/// a world is the cubes there and the cubes it'd make; none of its own.
+#[test]
+fn uthenn_realms_want_cubes() {
+    use realm::Arm;
+    let mut g = small_war();
+    let f = crate::faction::Faction::Uthenn.index();
+    assert!(g.living().any(|(_, r)| r.arm == Arm::Wants));
+    assert!(
+        g.living()
+            .all(|(_, r)| r.arm != Arm::Wants || r.faction as usize == f)
+    );
+    let r = (0..g.realms.len())
+        .find(|&r| g.realms[r].faction as usize == f && !g.territory(r).is_empty())
+        .unwrap();
+    let mine = g.territory(r)[0] as usize;
+    let theirs = (0..g.systems.len())
+        .find(|&s| g.systems[s].owner() != f)
+        .unwrap();
+    g.realms[r].arm = Arm::Smart;
+    assert_eq!(g.wanted(r as u32, theirs), 0.0);
+    g.realms[r].arm = Arm::Wants;
+    assert_eq!(g.wanted(r as u32, mine), 0.0);
+    let none = g.wanted(r as u32, theirs);
+    let v = g.vault_at[theirs] as usize;
+    g.stashes[v].cubes = 10_000;
+    let some = g.wanted(r as u32, theirs);
+    assert!(0.0 < none && none < some);
+    // Nor what it would pay to help or hold it: that is crystal's.
+    let pays = g.prize(r as u32, theirs, f, false);
+    g.realms[r].arm = Arm::Smart;
+    assert_eq!(pays, g.prize(r as u32, theirs, f, false));
+}
+
 /// A smart realm in a fight goes for every site, shielded or not, when it has
 /// the pilots for it, and fewer when it's outnumbered; a plain one always for
 /// the generators first.

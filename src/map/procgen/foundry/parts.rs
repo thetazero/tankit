@@ -1221,41 +1221,48 @@ impl Site<'_> {
         self.role = Role::Cast;
         let (w, l) = (self.f.half.x, self.f.half.y);
         let first = if roofed { 1 } else { 0 };
-        let foot = if roofed { CUBE } else { -2.0 * CUBE };
+        let foot = if roofed { CUBE } else { -1.5 * CUBE };
         let top = high as f32 * CUBE;
-        self.put(0.0, 0.0, (w - 0.04, l - 0.04), (foot, top));
         // (Seams are too fine to see that far off.)
-        if far {
+        let shown = far || self.pal.is_none();
+        // (Short of each other, far off: they're drawn grown.)
+        let gap = if far { 0.3 } else { 0.04 };
+        self.put(0.0, 0.0, (w - gap, l - gap), (foot, top)).hidden = !shown;
+        if shown {
             return;
         }
+        let (cast, metal) = self.look(Role::Cast);
         let Some(p) = &self.pal else { return };
         let (dark, glow) = (p.dark * 0.4, p.molten);
-        let metal = Material::Metal;
-        for k in first + 1..high {
+        // Drawn a course at a time, dark between. (Boxes are drawn a little
+        // grown, tall ones more: see `scene::map_mesh`.)
+        for k in first..high {
             let y = k as f32 * CUBE;
-            let half = (w + 0.065, l + 0.065);
-            self.deck(0.0, 0.0, half, (y - 0.045, y + 0.045), dark, metal);
+            let y0 = if k == 0 { foot } else { y + 0.1 };
+            let y1 = y + CUBE - if k + 1 < high { 0.1 } else { 0.0 };
+            self.deck(0.0, 0.0, (w - 0.04, l - 0.04), (y0, y1), cast, metal);
+            if k + 1 < high {
+                let y = (y1 - 0.3, y1 + 0.5);
+                self.deck(0.0, 0.0, (w - 0.35, l - 0.35), y, dark, metal);
+            }
         }
         let (nx, nz) = (
             (w * 2.0 / CUBE).round() as i32,
             (l * 2.0 / CUBE).round() as i32,
         );
-        let up = (foot + 0.02, top + 0.085);
-        for i in 1..=nx {
-            // (The last is just inside its face, not over it.)
-            let x = (-w + CUBE * i as f32).min(w - 0.16);
-            self.deck(x, 0.0, (0.06, l + 0.1), up, dark, metal);
-        }
-        for j in 1..=nz {
-            let z = (-l + CUBE * j as f32).min(l - 0.16);
-            self.deck(
-                0.0,
-                z,
-                (w + 0.12, 0.06),
-                (up.0 + 0.02, up.1 + 0.02),
-                dark,
-                metal,
-            );
+        for k in first..high {
+            let y = k as f32 * CUBE;
+            let y1 = y + CUBE + if k + 1 < high { -0.16 } else { 0.3 };
+            let up = (y + 0.16, y1);
+            for i in 1..nx {
+                let x = -w + CUBE * i as f32;
+                self.deck(x, 0.0, (0.06, l + 0.09), up, dark, metal);
+            }
+            for j in 1..nz {
+                let z = -l + CUBE * j as f32;
+                let up = (up.0 + 0.02, up.1 + 0.015);
+                self.deck(0.0, z, (w + 0.11, 0.06), up, dark, metal);
+            }
         }
         let h = CUBE * 0.5 - 0.12;
         for i in 0..nx {

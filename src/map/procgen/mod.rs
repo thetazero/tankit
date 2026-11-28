@@ -71,7 +71,7 @@ pub enum Biome {
     /// A rail depot, on whichever ground.
     Depot(foundry::Ground),
     /// A hoard of the Uthenn's tungsten cubes, on whichever ground.
-    Hoard(foundry::Ground),
+    Hoard(foundry::Ground, hoard::Stretch),
 }
 
 /// Whose place it is.
@@ -238,7 +238,7 @@ fn build_map(spec: &Spec) -> Map {
         Biome::Open(_) | Biome::Reservoir => desert::build(spec),
         Biome::Foundry(ground) => foundry::build(spec, ground),
         Biome::Depot(ground) => depot::build(spec, ground),
-        Biome::Hoard(ground) => hoard::build(spec, ground),
+        Biome::Hoard(ground, _) => hoard::build(spec, ground),
     };
     ways::lay(&mut map);
     map
@@ -426,7 +426,7 @@ fn planet(biome: Biome) -> crate::planet::Look {
         Biome::Open(ground)
         | Biome::Foundry(ground)
         | Biome::Depot(ground)
-        | Biome::Hoard(ground) => ground.planet(),
+        | Biome::Hoard(ground, _) => ground.planet(),
     }
 }
 
@@ -437,7 +437,7 @@ pub fn greybox(spec: &Spec) -> Map {
         Biome::Open(_) | Biome::Reservoir => return desert::greybox(spec),
         Biome::Foundry(ground) => return foundry::greybox(spec, ground),
         Biome::Depot(ground) => return depot::greybox(spec, ground),
-        Biome::Hoard(ground) => return hoard::greybox(spec, ground),
+        Biome::Hoard(ground, _) => return hoard::greybox(spec, ground),
         Biome::City => {}
     }
     let sk = skeleton(spec);

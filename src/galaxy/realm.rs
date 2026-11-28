@@ -24,6 +24,7 @@
 use glam::Vec3;
 
 use super::{Galaxy, NEIGHBORS, SIDES};
+use crate::faction::Faction;
 
 /// No realm.
 pub const NONE: u32 = u32::MAX;
@@ -31,7 +32,7 @@ pub const NONE: u32 = u32::MAX;
 /// within this share of the reach of all of it.
 const FOLD_REACH: f32 = 0.8;
 
-/// How a realm runs its war: each is one of two at random, to see which
+/// How a realm runs its war: each is one of its people's at random, to see which
 /// fares better. A realm breaking away keeps its parent's way, and realms only
 /// fold together with their own kind. All play by the same rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,21 +41,40 @@ pub enum Arm {
     Plain,
     /// Plans its war (see `smart`).
     Smart,
+    /// Plans it, after what its people want (the Uthenn's only, so far:
+    /// tungsten cubes).
+    Wants,
 }
 
 impl Arm {
-    pub const ALL: [Arm; 2] = [Arm::Plain, Arm::Smart];
+    pub const ALL: [Arm; 3] = [Arm::Plain, Arm::Smart, Arm::Wants];
+
+    /// The arms of side `f`'s realms.
+    pub fn of(f: usize) -> &'static [Arm] {
+        if f == Faction::Uthenn.index() {
+            &Arm::ALL
+        } else {
+            &Arm::ALL[..2]
+        }
+    }
+
+    /// Whether it plans its war at all.
+    pub fn plans(self) -> bool {
+        self != Arm::Plain
+    }
 
     pub fn name(self) -> &'static str {
         match self {
             Arm::Plain => "plain",
             Arm::Smart => "smart",
+            Arm::Wants => "wants",
         }
     }
 
-    /// One at random.
-    pub(crate) fn draw(rng: &mut crate::rng::Rng) -> Arm {
-        Arm::ALL[rng.index(Arm::ALL.len())]
+    /// One of side `f`'s at random.
+    pub(crate) fn draw(f: usize, rng: &mut crate::rng::Rng) -> Arm {
+        let arms = Arm::of(f);
+        arms[rng.index(arms.len())]
     }
 }
 
@@ -167,7 +187,7 @@ impl Realm {
         self.pilots = self.pilots.min((self.crystals / upkeep) as u32);
         self.crystals = (self.crystals - self.pilots as f32 * upkeep).max(0.0);
         let mut left = before - self.pilots;
-        if self.arm == Arm::Smart {
+        if self.arm.plans() {
             return left + self.crew_up(rules, free);
         }
         // Over a career, what one earns it over their pay.
@@ -230,7 +250,7 @@ impl Galaxy {
     /// gone if there is one.
     pub(crate) fn found(&mut self, faction: u8, seat: u32) -> u32 {
         let realm = Realm {
-            arm: Arm::draw(&mut self.rng),
+            arm: Arm::draw(faction as usize, &mut self.rng),
             ..Realm::new(faction, seat, self.tick)
         };
         // A slot is free once nothing is tagged with it (`systems` and `alive`
@@ -288,7 +308,7 @@ impl Galaxy {
         for (f, seats) in seats.iter().enumerate() {
             for &seat in seats {
                 of_seat[seat as usize] = self.realms.len() as u32;
-                let arm = Arm::draw(&mut self.rng);
+                let arm = Arm::draw(f, &mut self.rng);
                 self.realms.push(Realm {
                     arm,
                     ..Realm::new(f as u8, seat, 0)

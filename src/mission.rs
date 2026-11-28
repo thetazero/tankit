@@ -4,6 +4,7 @@
 
 use crate::MapKind;
 use crate::faction::Faction;
+use crate::map::procgen::hoard::Stretch;
 use crate::map::procgen::{Look, foundry::Ground};
 
 /// What a mission pays you for.
@@ -200,12 +201,12 @@ pub const MISSIONS: &[Mission] = &[
         team_size: 6,
         sides: &[Faction::Imperium, Faction::Resonant],
     },
-    // A site's is on its world's ground.
+    // A site's is on its world's ground, where its count of cubes says.
     Mission {
         name: "DEAD WEIGHT",
         contract: Contract::Attrition,
         map: "TUNGSTEN HOARD",
-        map_kind: MapKind::Hoard(Ground::Desert),
+        map_kind: MapKind::Hoard(Ground::Desert, Stretch::Front),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Uthenn, Faction::Ithessar],
@@ -214,7 +215,7 @@ pub const MISSIONS: &[Mission] = &[
         name: "FULL COUNT",
         contract: Contract::Hold,
         map: "TUNGSTEN HOARD",
-        map_kind: MapKind::Hoard(Ground::Desert),
+        map_kind: MapKind::Hoard(Ground::Desert, Stretch::Front),
         seed: 0,
         team_size: 6,
         sides: &[Faction::Uthenn, Faction::Ithessar],
@@ -253,7 +254,7 @@ pub fn for_mines() -> Vec<usize> {
 
 /// The missions a tungsten hoard can be fought with (#710): those on one.
 pub fn for_hoards() -> Vec<usize> {
-    on_maps(|kind| matches!(kind, MapKind::Hoard(_)))
+    on_maps(|kind| matches!(kind, MapKind::Hoard(..)))
 }
 
 /// The missions an outpost on a `class` world can be fought with (#547):
@@ -263,7 +264,7 @@ pub fn for_outposts(class: crate::galaxy::theater::Class) -> Vec<usize> {
     pool.retain(|&i| {
         !matches!(
             MISSIONS[i].map_kind,
-            MapKind::Foundry(..) | MapKind::Mine(..) | MapKind::Hoard(_)
+            MapKind::Foundry(..) | MapKind::Mine(..) | MapKind::Hoard(..)
         )
     });
     pool

@@ -22,11 +22,12 @@ use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
 /// What part of the network a window's on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Stretch {
     /// The trunk, side lines off it.
     Trunk,
     /// Where a big line splits.
+    #[default]
     Fork,
     /// The growing edge: blocks half built, then bare ground.
     Front,
