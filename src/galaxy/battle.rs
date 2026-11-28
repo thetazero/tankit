@@ -752,11 +752,15 @@ mod tests {
 
     /// A small galaxy, a little way in: quick to make, even unoptimized.
     fn seeded(seed: u64) -> Galaxy {
-        let mut g = Galaxy::with_size(seed, SYSTEMS / 4, REGION * 0.5, Rules::default());
-        for _ in 0..50 {
-            g.step();
-        }
-        g
+        static KEPT: crate::map::procgen::memo::Memo<u64, Galaxy, 20> =
+            crate::map::procgen::memo::Memo::new();
+        KEPT.get(&seed, || {
+            let mut g = Galaxy::with_size(seed, SYSTEMS / 4, REGION * 0.5, Rules::default());
+            for _ in 0..50 {
+                g.step();
+            }
+            g
+        })
     }
 
     const PAIR: [Faction; 2] = [Faction::Imperium, Faction::Resonant];
@@ -1473,11 +1477,16 @@ mod gear_tests {
     #[test]
     fn realms_research_their_gear() {
         let mut g = Galaxy::warmed_hired(3);
-        let before: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
+        let tiers = |g: &Galaxy| g.living().map(|(_, r)| r.tier as u32).sum::<u32>();
+        let (before, mut after) = (tiers(&g), 0);
+        // (Until somebody has; every step is a good few ms.)
         for _ in 0..200 {
             g.step();
+            after = tiers(&g);
+            if after > before {
+                break;
+            }
         }
-        let after: u32 = g.living().map(|(_, r)| r.tier as u32).sum();
         assert!(
             after > before,
             "nobody researched anything: {before} -> {after}"

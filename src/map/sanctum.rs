@@ -229,7 +229,7 @@ impl Map {
             }
         }
         let blocked = |p: Vec2, m: &Map| {
-            plan.past_edge(p) > -10.0 || m.oboxes.iter().any(|o| o.solid && o.distance(p) < 4.0)
+            plan.past_edge(p) > -10.0 || m.oboxes.iter().any(|o| o.solid && o.within(p, 4.0))
         };
         let spots = std::mem::take(&mut map.open_spots);
         map.open_spots = spots.into_iter().filter(|&p| !blocked(p, &map)).collect();

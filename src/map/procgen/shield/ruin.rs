@@ -897,7 +897,7 @@ mod tests {
     /// as one that's up, and nothing of its scaffold can be driven through.
     #[test]
     fn repairs_keep_out_of_the_hold_ring() {
-        use crate::map::procgen::{Look, build, skeleton};
+        use crate::map::procgen::{Look, map, skeleton};
         for owner in [
             Faction::Imperium,
             Faction::Resonant,
@@ -925,8 +925,8 @@ mod tests {
                 }
                 n
             };
-            let (whole, _) = build(&up);
-            let (mending, _) = build(&spec(Condition::DAMAGED));
+            let whole = map(&up);
+            let mending = map(&spec(Condition::DAMAGED));
             assert!(open(&mending) >= open(&whole), "{owner:?}");
             for m in &mending.oboxes {
                 let tube = m.color == TUBE || m.color == BOARD || m.color == CRANE;

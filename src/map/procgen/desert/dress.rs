@@ -227,8 +227,11 @@ impl Sand<'_> {
             if Some(i) == except {
                 return false;
             }
+            if !o.within(p, near) {
+                return false;
+            }
             let (lo, hi) = o.y_range();
-            hi > g - 1.0 && lo < g + 6.0 && o.distance(p) < near
+            hi > g - 1.0 && lo < g + 6.0
         })
     }
 
@@ -626,7 +629,7 @@ impl Sand<'_> {
     fn cover_near(&self, p: Vec2, r: f32) -> bool {
         let g = self.g(p);
         self.map.oboxes.iter().any(|o| {
-            if !o.solid || o.distance(p) > r {
+            if !o.solid || !o.within(p, r) {
                 return false;
             }
             let (lo, hi) = o.y_range();
@@ -720,8 +723,11 @@ impl Sand<'_> {
     fn clear(&self, p: Vec2, r: f32) -> bool {
         let g = self.g(p);
         !self.map.oboxes.iter().any(|o| {
+            if !o.within(p, r) {
+                return false;
+            }
             let (lo, hi) = o.y_range();
-            o.solid && lo < g + 3.0 && hi > g + 0.3 && o.distance(p) < r
+            o.solid && lo < g + 3.0 && hi > g + 0.3
         })
     }
 

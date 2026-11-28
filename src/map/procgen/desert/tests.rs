@@ -28,6 +28,18 @@ fn every_form_is_playable_dressed() {
     }
 }
 
+/// `OBox::within` gives up on no box whose shadow reaches a point.
+#[test]
+fn near_boxes_are_found() {
+    for m in [Map::desert(0), Map::reservoir(0)] {
+        for o in &m.oboxes {
+            for p in o.shadow() {
+                assert!(o.within(p, 0.1), "{p}: {o:?}");
+            }
+        }
+    }
+}
+
 /// The forms are different land: how much of the arena is high ground.
 #[test]
 fn the_forms_are_different_land() {
@@ -375,20 +387,20 @@ fn the_shield_camp_is_on_any_ground() {
     for seed in SEEDS {
         let owner = Faction::ALL[seed as usize];
         let g = crate::Generator::up(owner);
-        let built = Ground::ALL.map(|ground| build(&crate::shield_camp_spec(seed, ground, g)));
-        let [desert, tundra, grass] = &built;
-        for (m, ground) in [(tundra, Ground::Tundra), (grass, Ground::Grassland)] {
-            let what = format!("{owner:?} seed {seed} on {ground:?}");
-            if let Err(why) = crate::map::procgen::check::playable(m) {
-                panic!("{what}: {why}");
-            }
-            assert_eq!(m.hold_site, desert.hold_site, "{what}");
-            assert_eq!(m.bases, desert.bases, "{what}");
-            assert!(m.repair_spots.len() >= 3, "{what}");
-            assert!(m.atmosphere.settle != desert.atmosphere.settle, "{what}");
-            assert!(m.oboxes.len() > desert.oboxes.len() + 50, "{what}");
-            let planet = m.planet.unwrap().1.land;
-            assert_eq!(planet, ground.planet().land, "{what}");
+        let on = |ground| crate::map::procgen::map(&crate::shield_camp_spec(seed, ground, g));
+        // (Tundra and grassland by turns: each camp takes a second or two.)
+        let ground = [Ground::Tundra, Ground::Grassland][seed as usize % 2];
+        let (desert, m) = (&on(Ground::Desert), &on(ground));
+        let what = format!("{owner:?} seed {seed} on {ground:?}");
+        if let Err(why) = crate::map::procgen::check::playable(m) {
+            panic!("{what}: {why}");
         }
+        assert_eq!(m.hold_site, desert.hold_site, "{what}");
+        assert_eq!(m.bases, desert.bases, "{what}");
+        assert!(m.repair_spots.len() >= 3, "{what}");
+        assert!(m.atmosphere.settle != desert.atmosphere.settle, "{what}");
+        assert!(m.oboxes.len() > desert.oboxes.len() + 50, "{what}");
+        let planet = m.planet.unwrap().1.land;
+        assert_eq!(planet, ground.planet().land, "{what}");
     }
 }

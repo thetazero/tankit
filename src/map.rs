@@ -398,6 +398,16 @@ impl OBox {
         polygon_distance(&self.shadow(), p)
     }
 
+    /// Whether a ground point is nearer than `r` to the box's shadow (see
+    /// `distance`). Quick for a box that's nowhere near: working out a
+    /// turned box's shadow isn't.
+    pub fn within(&self, p: Vec2, r: f32) -> bool {
+        // (A rock's surface keeps to its box, or very nearly.)
+        let reach = self.half.extend((self.y1 - self.y0) * 0.5).length() * 1.1 + 0.1;
+        let far = reach + r.max(0.0);
+        self.center.distance_squared(p) <= far * far && self.distance(p) < r
+    }
+
     /// Footprint corners in world xz, counter-clockwise.
     pub fn corners(&self) -> [Vec2; 4] {
         let (ax, az) = self.axes();

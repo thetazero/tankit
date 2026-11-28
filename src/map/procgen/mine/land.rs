@@ -181,8 +181,11 @@ pub(in crate::map::procgen) fn growth(
             || sk.tracks.iter().any(|t| line_distance(t, p) < 4.0)
             || sk.crossings.iter().any(|x| seg(p, x.from, x.to).0 < 8.0)
             || (map.oboxes[..boxes].iter()).any(|o| {
+                if !o.within(p, 1.0) {
+                    return false;
+                }
                 let (lo, hi) = o.y_range();
-                hi > g && lo < g + 3.0 && o.distance(p) < 1.0
+                hi > g && lo < g + 3.0
             });
         if taken {
             continue;
