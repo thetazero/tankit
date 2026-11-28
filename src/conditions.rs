@@ -1,4 +1,4 @@
-//! What a map's fought in: the time of day, and the weather. A layer over
+//! What a map's fought in: the time of day, the weather, and the stars in its sky. A layer over
 //! any map: the map is built as ever, with its own sky (its day), and the
 //! conditions then make that sky over (`Conditions::apply`). Nothing on the
 //! map moves, so its layout, cover and vistas are the same in any of them.
@@ -7,6 +7,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::companions::{self, Companions};
 use crate::map::Map;
 use crate::render::{Atmosphere, HIDDEN};
 use crate::rng::Rng;
@@ -81,6 +82,8 @@ pub struct Conditions {
     /// How bright the system's star is, 1 the galaxy's average
     /// (`galaxy::System::starlight`).
     pub starlight: f32,
+    /// The companions of its system's star.
+    pub companions: Companions,
 }
 
 impl Default for Conditions {
@@ -89,6 +92,7 @@ impl Default for Conditions {
             time: TimeOfDay::Day,
             weather: Weather::Clear,
             starlight: 1.0,
+            companions: Companions::default(),
         }
     }
 }
@@ -114,6 +118,7 @@ impl Conditions {
             time,
             weather,
             starlight,
+            companions: Companions::default(),
         }
     }
 
@@ -133,6 +138,8 @@ impl Conditions {
             Weather::Clear => {}
             Weather::Sandstorm => storm(&mut map.atmosphere),
         }
+        let night = self.time == TimeOfDay::Night;
+        companions::light_up(&self.companions, night, &mut map.atmosphere);
     }
 }
 

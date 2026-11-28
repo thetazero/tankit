@@ -98,6 +98,7 @@ pub(super) fn atmosphere(ground: Ground, rng: &mut Rng) -> Atmosphere {
         settle: crate::render::SAND_SETTLE,
         ambient: 1.0,
         stars: 0.0,
+        companions: Default::default(),
         sun_size: 1.0,
     };
     match ground {
