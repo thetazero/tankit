@@ -1,323 +1,461 @@
-//! How a hoard is laid out. In order: the land, flattened for the grid, and
-//! the counting floor raised in the middle; each side's pad, at opposite
-//! ends; the grid's lanes and the roads out; a stack in every square of it
-//! (here and there a monolith, a pair of small stacks, or nothing), gantries
-//! over the lanes; sheds and stray cubes out on the land round it.
+//! How a stretch of hoard is laid out: a tract's railways (`network`), a
+//! window cut out of it somewhere worth fighting over, and every bit of
+//! ground that isn't line packed with cubes, as high as it bears.
+//!
+//! In order: the window (`Stretch`); which lattice squares are open (lines,
+//! yards, pads, cuts and galleries through the blocks), the rest stacked;
+//! the tracks and what stands on them.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 use glam::Vec2;
 
+use super::network::{Network, TRACT};
 use crate::map::OBox;
+use crate::map::noise::noise2;
 use crate::map::procgen::city;
-use crate::map::procgen::foundry::Part;
-use crate::map::procgen::foundry::plan::{PAD, lay, lot, off_roads, repairs, room};
+use crate::map::procgen::foundry::plan::{PAD, bed, lot, repairs};
+use crate::map::procgen::foundry::{CUBE, Part};
 use crate::map::procgen::land::{Land, Swell};
+use crate::map::procgen::mine::seg;
 use crate::map::procgen::skeleton::*;
 use crate::rng::Rng;
 
-/// How far the counting floor's kept clear of the grid's stacks: its top
-/// and the slope up to it.
-const FLOOR: f32 = 40.0;
-/// How high it stands.
-const RISE: f32 = 3.2;
-
-/// The grid: its middle, which way it runs, how far apart its lanes are,
-/// and how many squares it runs to either way.
-struct Grid {
-    mid: Vec2,
-    along: Vec2,
-    pitch: f32,
-    n: i32,
+/// What part of the network a window's on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stretch {
+    /// The trunk, side lines off it.
+    Trunk,
+    /// Where a big line splits.
+    Fork,
+    /// The growing edge: blocks half built, then bare ground.
+    Front,
 }
 
-impl Grid {
-    fn at(&self, u: f32, v: f32) -> Vec2 {
-        self.mid + self.along * u + self.along.perp() * v
+impl Stretch {
+    pub const ALL: [Stretch; 3] = [Stretch::Front, Stretch::Fork, Stretch::Trunk];
+}
+
+const SIZE: f32 = 300.0;
+/// The open ground round the heart, and round a pad.
+const YARD: f32 = 20.0;
+const PADDED: f32 = PAD + 4.0;
+/// Half a cut's, or gallery's, width.
+const CUT: f32 = 7.5;
+/// How far past the edge it's seen to go on.
+pub const BEYOND: f32 = 130.0;
+/// Between one track and the next.
+const TRACK: f32 = 5.6;
+
+/// The window, and what's open in it.
+struct Window {
+    turn: Vec2,
+    /// Where in the tract the heart is, and on the map.
+    from: Vec2,
+    heart: Vec2,
+    /// The network's reaches near it, on the map: ends, half widths.
+    reaches: Vec<(Vec2, Vec2, f32, f32)>,
+    /// Ways through the blocks; roofed or not.
+    cuts: Vec<(Vec2, Vec2, bool)>,
+    pads: Vec<Vec2>,
+    /// The way the hoard grows, if it's still growing here.
+    front: Option<Vec2>,
+    salt: u32,
+}
+
+impl Window {
+    fn to_map(&self, p: Vec2) -> Vec2 {
+        self.heart + self.turn.rotate(p - self.from)
     }
 
-    fn reach(&self) -> f32 {
-        self.pitch * self.n as f32
+    /// How built up it is at `p`: none of it to all.
+    fn built(&self, p: Vec2) -> f32 {
+        let Some(d) = self.front else { return 1.0 };
+        let n = noise2(p.x / 38.0, p.y / 38.0, self.salt) - 0.5;
+        (0.42 - (p - self.heart).dot(d) / 130.0 + 0.5 * n).clamp(0.0, 1.0)
     }
 
-    fn set(&self, u: f32, v: f32, half: Vec2) -> OBox {
-        OBox {
-            center: self.at(u, v),
-            yaw: self.along.x.atan2(self.along.y),
-            half,
-            ..OBox::default()
+    /// Courses of cubes standing at `p`, as many as the ground bears.
+    fn courses(&self, p: Vec2) -> u8 {
+        // Rock here, soil there: whole districts of it.
+        let n = |s: f32, k: u32| noise2(p.x / s, p.y / s, self.salt + k);
+        let bears = 1.4 + 5.2 * smoothstep(0.2, 0.8, n(78.0, 1));
+        (bears * self.built(p)).round() as u8
+    }
+
+    /// Whether a square at `p` is open, and whether it's roofed.
+    fn open(&self, p: Vec2) -> Option<bool> {
+        let h = CUBE * 0.5;
+        let line = |&(a, b, ha, hb): &(Vec2, Vec2, f32, f32)| {
+            let (d, t) = seg(p, a, b);
+            d < ha + (hb - ha) * t + h
+        };
+        if self.reaches.iter().any(line)
+            || p.distance(self.heart) < YARD + h
+            || self.pads.iter().any(|q| q.distance(p) < PADDED + h)
+        {
+            return Some(false);
+        }
+        let on = |c: &&(Vec2, Vec2, bool)| seg(p, c.0, c.1).0 < CUT + h * 0.6;
+        let cut: Vec<bool> = self.cuts.iter().filter(on).map(|c| c.2).collect();
+        (!cut.is_empty()).then(|| cut.iter().all(|&roofed| roofed))
+    }
+}
+
+pub fn skeleton(rng: &mut Rng, stretch: Stretch) -> Skeleton {
+    let net = Network::grow(rng);
+    let heart =
+        Vec2::splat(SIZE * 0.5) + Vec2::new(rng.range(-0.05, 0.05), rng.range(-0.05, 0.05)) * SIZE;
+    let spot = pick(&net, rng, stretch);
+    let turn = Vec2::from_angle(rng.range(0.0, TAU));
+    let from = net.nodes[spot].at;
+    let mut w = Window {
+        turn,
+        from,
+        heart,
+        reaches: Vec::new(),
+        cuts: Vec::new(),
+        pads: Vec::new(),
+        front: None,
+        salt: (rng.next_u64() >> 40) as u32,
+    };
+    let at: Vec<Vec2> = net.nodes.iter().map(|n| w.to_map(n.at)).collect();
+    let out = |p: Vec2| (-p).max(p - Vec2::splat(SIZE)).max_element();
+    for n in &net.nodes {
+        let Some(f) = n.from else { continue };
+        let (a, b) = (w.to_map(net.nodes[f].at), w.to_map(n.at));
+        if out(a).min(out(b)) < BEYOND + 30.0 {
+            w.reaches
+                .push((a, b, net.nodes[f].half.min(n.half * 1.5), n.half));
         }
     }
-}
+    let inside: Vec<usize> = (0..at.len())
+        .filter(|&k| out(at[k]) < -(PAD + 7.0))
+        .collect();
+    // The sides: on lines, as far apart as any two places in the window, or
+    // nearly, and about as far from the heart.
+    let mut best = (f32::MIN, heart, heart);
+    for (i, &a) in inside.iter().enumerate() {
+        for &b in &inside[i + 1..] {
+            let (p, q) = (at[a], at[b]);
+            let uneven = (p.distance(heart) - q.distance(heart)).abs();
+            let score = p.distance(q) - 0.7 * uneven + rng.range(0.0, 18.0);
+            if score > best.0 {
+                best = (score, p, q);
+            }
+        }
+    }
+    w.pads = vec![best.1, best.2];
+    if stretch == Stretch::Front {
+        // Across the way between the sides: each has some of both.
+        let d = (best.2 - best.1).normalize_or(Vec2::X).perp();
+        let outward = turn.rotate(from).dot(d) < 0.0;
+        w.front = Some(if outward { -d } else { d });
+    }
+    cuts(&mut w, &net, &at, &inside, rng);
 
-pub fn skeleton(rng: &mut Rng) -> Skeleton {
-    let size = 20.0 * rng.int(13, 15) as f32;
-    let mid = Vec2::splat(size * 0.5);
-    let heart = mid + Vec2::new(rng.range(-0.04, 0.04), rng.range(-0.04, 0.04)) * size;
-    let grid = Grid {
-        mid: heart,
-        along: Vec2::from_angle(rng.range(0.0, TAU)),
-        pitch: rng.range(22.0, 24.0),
-        n: 4,
-    };
-    // No valley through it: hills round it.
-    let mut land = Land::rolling(rng, size, &[]);
+    let mut land = Land::rolling(rng, SIZE, &[]);
     land.swells.retain(|s| !matches!(s, Swell::Cut(_)));
-    let level = land.swell(heart);
-    let flat = grid.set(0.0, 0.0, Vec2::splat(grid.reach()));
-    land.level_at(flat, 4.0, 40.0, level);
-    let top = grid.set(0.0, 0.0, Vec2::splat(18.0));
-    land.level_at(top, 2.0, 16.0, level + RISE);
     let mut sk = Skeleton {
-        size,
+        size: SIZE,
         land,
         heart,
+        bases: w.pads.iter().map(|&p| Base::pad(p, PAD)).collect(),
         ..Skeleton::default()
     };
-    bases(&mut sk, rng);
-    roads(&mut sk, rng, &grid);
-    stacks(&mut sk, rng, &grid);
-    gantries(&mut sk, rng, &grid);
-    outside(&mut sk, rng, &grid);
-    strays(&mut sk, rng, &grid);
+    lines(&mut sk, &w, &net, &at, rng);
+    bed(&mut sk);
+    blocks(&mut sk, &w);
+    if stretch == Stretch::Front {
+        loaders(&mut sk, &w, rng);
+    }
     repairs(&mut sk, rng);
     sk.squares.push(Square {
         center: heart,
-        radius: 15.0,
+        radius: 14.0,
     });
     city::level(&mut sk);
     sk
 }
 
-/// Each side's pad, about opposite each other, as far out as they go.
-fn bases(sk: &mut Skeleton, rng: &mut Rng) {
-    let a = rng.range(0.0, TAU);
-    let edge = PAD + 6.0;
-    let room = sk.size * 0.5 - edge;
-    sk.bases = [0.0, TAU * 0.5 + rng.range(-0.35, 0.35)]
-        .into_iter()
-        .map(|t| {
-            let d = Vec2::from_angle(a + t);
-            let p = Vec2::splat(sk.size * 0.5) + d * room / d.abs().max_element();
-            Base::pad(p, PAD)
-        })
+/// The node a window's cut round.
+fn pick(net: &Network, rng: &mut Rng, stretch: Stretch) -> usize {
+    // (Far enough in that there's network all round it.)
+    let mut pool: Vec<usize> = (0..net.nodes.len())
+        .filter(|&k| net.nodes[k].at.abs().max_element() < TRACT - 190.0)
         .collect();
+    // How much the second line off a fork carries.
+    let second = |k: usize| {
+        let mut e: Vec<u32> = net.nodes[k]
+            .next
+            .iter()
+            .map(|&n| net.nodes[n].ends)
+            .collect();
+        e.sort();
+        e.len().checked_sub(2).map_or(0, |i| e[i])
+    };
+    match stretch {
+        Stretch::Trunk => pool.sort_by_key(|&k| std::cmp::Reverse((net.nodes[k].ends, second(k)))),
+        _ => pool.sort_by_key(|&k| std::cmp::Reverse(second(k))),
+    }
+    let first = match stretch {
+        Stretch::Trunk => 12,
+        _ => 5,
+    };
+    pool[rng.index(first.min(pool.len()))]
 }
 
-/// The grid's lanes, inside the arena and off the pads; two roads out; every
-/// pad onto them.
-fn roads(sk: &mut Skeleton, rng: &mut Rng, grid: &Grid) {
-    let size = sk.size;
-    let reach = grid.reach();
-    let pads = sk.base_spots();
-    for flip in [false, true] {
-        for k in -grid.n..=grid.n {
-            let v = k as f32 * grid.pitch;
-            let on = |u: f32| match flip {
-                false => grid.at(u, v),
-                true => grid.at(v, u),
-            };
-            let open = |u: f32| {
-                let p = on(u);
-                p.min_element() > 16.0
-                    && p.max_element() < size - 16.0
-                    && p.distance(grid.mid) < reach * 1.15
-                    && pads.iter().all(|b| b.distance(p) > PAD + 4.0)
-            };
-            // The stretch through its middle.
-            let mut ends = [0.0f32; 2];
-            for (e, s) in ends.iter_mut().zip([-1.0f32, 1.0]) {
-                while e.abs() < reach && open(*e + s * 2.0) {
-                    *e += s * 2.0;
-                }
-            }
-            if ends[1] - ends[0] < grid.pitch {
-                continue;
-            }
-            let (half, rank) = match k {
-                0 => (5.0, Rank::Avenue),
-                _ => (4.4, Rank::Lane),
-            };
-            sk.streets.push(Street {
-                from: on(ends[0]),
-                to: on(ends[1]),
-                half,
-                clear: 3.0,
-                rank,
-                out: false,
-            });
+/// Ways through the blocks from one line to another that's far off by rail:
+/// half of them roofed, the galleries the cubes are counted from.
+fn cuts(w: &mut Window, net: &Network, at: &[Vec2], inside: &[usize], rng: &mut Rng) {
+    for _ in 0..6000 {
+        if w.cuts.len() >= 10 || inside.len() < 2 {
+            break;
         }
-    }
-    let mut mouths: city::Mouths = Default::default();
-    let first = rng.index(4);
-    for k in [first, (first + 2) % 4] {
-        let (start, along, inward) = city::sides(size)[k];
-        // From the end of the avenue nearest that edge.
-        let Some(from) = sk.avenues().flat_map(|s| [s.from, s.to]).min_by(|a, b| {
-            let off = |p: Vec2| (p - start).dot(inward);
-            off(*a).total_cmp(&off(*b))
-        }) else {
+        let (a, b) = (
+            inside[rng.index(inside.len())],
+            inside[rng.index(inside.len())],
+        );
+        let (p, q) = (at[a], at[b]);
+        let d = p.distance(q);
+        if !(28.0..125.0).contains(&d) || (net.along(a, b) as f32) * 10.0 < d * 1.7 {
             continue;
-        };
-        for _ in 0..12 {
-            let t = size * rng.range(0.2, 0.8);
-            if lay(sk, rng, (from, start + along * t), 6.0, Rank::Avenue, true) {
-                mouths[k].push((t - 9.0, t + 9.0));
-                break;
+        }
+        let mid = p.lerp(q, 0.5);
+        let apart = w.cuts.iter().all(|c| {
+            c.0.lerp(c.1, 0.5).distance(mid) > 46.0 && c.0.distance(p).min(c.1.distance(q)) > 20.0
+        });
+        // Through one block, not down a line.
+        let shut = (1..8)
+            .filter(|&k| w.open(p.lerp(q, k as f32 / 8.0)).is_none())
+            .count();
+        if apart && shut >= 2 {
+            let roofed = w.cuts.len() % 2 == 1 && w.courses(mid) >= 3;
+            w.cuts.push((p, q, roofed));
+        }
+    }
+}
+
+/// The tracks, side by side as many as a line has room for; a street down
+/// every line and cut; cars standing where it's wide enough to pass them.
+fn lines(sk: &mut Skeleton, w: &Window, net: &Network, at: &[Vec2], rng: &mut Rng) {
+    let out = |p: Vec2| (-p).max(p - Vec2::splat(SIZE)).max_element();
+    let mut mouths: city::Mouths = Default::default();
+    for line in net.lines() {
+        // The stretches of it that are near.
+        let mut runs: Vec<Vec<usize>> = vec![Vec::new()];
+        for &k in &line {
+            if out(at[k]) < BEYOND {
+                runs.last_mut().unwrap().push(k);
+            } else if !runs.last().unwrap().is_empty() {
+                runs.push(Vec::new());
+            }
+        }
+        for run in runs.iter().filter(|r| r.len() >= 3) {
+            let pts: Vec<Vec2> = run.iter().map(|&k| at[k]).collect();
+            // (The narrowest it gets, bar its very end.)
+            let halves: Vec<f32> = run[1..].iter().map(|&k| net.nodes[k].half).collect();
+            streets(sk, &pts, &halves, &mut mouths);
+            let start = halves[0];
+            let n = (((start - 4.0) * 2.0 / TRACK) as i32).clamp(1, 5);
+            for k in 0..n {
+                let off = (k as f32 - (n - 1) as f32 * 0.5) * TRACK;
+                // A track ends where its line's too narrow for it.
+                let fits = halves.iter().take_while(|&&h| off.abs() < h - 3.0).count();
+                if fits < 3 {
+                    continue;
+                }
+                let track = offset(&pts[..fits + 1], off);
+                cars(sk, w, &track, off, &halves, rng);
+                sk.tracks.push(track);
             }
         }
     }
-    for c in pads {
-        let d = (sk.heart - c).normalize_or(Vec2::X);
-        let mouth = c + d * (PAD + 3.0);
-        let near = sk
-            .streets
-            .iter()
-            .flat_map(|s| [s.from, s.from.lerp(s.to, 0.5), s.to])
-            .min_by(|a, b| a.distance(mouth).total_cmp(&b.distance(mouth)));
-        if let Some(to) = near {
-            lay(sk, rng, (mouth, to), 4.6, Rank::Lane, false);
-        }
+    for &(a, b, _) in &w.cuts {
+        sk.streets.push(Street {
+            from: a,
+            to: b,
+            half: CUT - 1.5,
+            clear: 3.0,
+            rank: Rank::Lane,
+            out: false,
+        });
     }
-    city::crossings(sk);
     city::cordon(sk, rng, &mouths);
 }
 
-/// Something in every square of the grid that's clear of the counting
-/// floor, and a stack at each of the floor's corners.
-fn stacks(sk: &mut Skeleton, rng: &mut Rng, grid: &Grid) {
-    let put = |sk: &mut Skeleton, b: OBox, part: Part| {
-        if room(sk, &b, 2.5) && off_roads(sk, &b, 0.3) {
-            sk.lots.push(lot(b, part));
+/// `pts` moved `off` to its left.
+fn offset(pts: &[Vec2], off: f32) -> Vec<Vec2> {
+    let last = pts.len() - 1;
+    (0..pts.len())
+        .map(|k| {
+            let d = pts[(k + 1).min(last)] - pts[k.saturating_sub(1)];
+            pts[k] + d.normalize_or(Vec2::X).perp() * off
+        })
+        .collect()
+}
+
+fn streets(sk: &mut Skeleton, pts: &[Vec2], halves: &[f32], mouths: &mut city::Mouths) {
+    let size = sk.size;
+    let inside = |p: Vec2| p.min_element() >= 0.0 && p.max_element() <= size;
+    for (k, s) in pts.windows(2).enumerate() {
+        let (a, b) = (s[0], s[1]);
+        let half = halves[k];
+        if inside(a) && inside(b) {
+            sk.streets.push(Street {
+                from: a,
+                to: b,
+                half: half - 1.5,
+                clear: 3.0,
+                rank: if half > 12.0 {
+                    Rank::Avenue
+                } else {
+                    Rank::Lane
+                },
+                out: false,
+            });
+        } else if inside(a) || inside(b) {
+            let p = a.lerp(b, 0.5);
+            for (side, &(start, along, inward)) in city::sides(size).iter().enumerate() {
+                if (p - start).dot(inward).abs() < 8.0 {
+                    let t = (p - start).dot(along);
+                    mouths[side].push((t - half - 3.0, t + half + 3.0));
+                }
+            }
         }
-    };
-    for (u, v) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
-        let b = grid.set(u * 14.7, v * 14.7, Vec2::splat(2.5));
-        put(sk, b, Part::Stack);
     }
-    for i in -grid.n..grid.n {
-        for j in -grid.n..grid.n {
-            let (u, v) = ((i as f32 + 0.5) * grid.pitch, (j as f32 + 0.5) * grid.pitch);
-            let far = Vec2::new(u, v).length();
-            if !(FLOOR..grid.reach() * 1.15).contains(&far) {
+}
+
+/// Trains standing on a track, gaps to drive through between.
+fn cars(sk: &mut Skeleton, w: &Window, track: &[Vec2], off: f32, halves: &[f32], rng: &mut Rng) {
+    let mut gap = rng.int(0, 3);
+    for (k, s) in track.windows(2).enumerate() {
+        let half = halves[k.min(halves.len() - 1)];
+        // (Room to pass it on one side at least.)
+        let wide = half + off.abs() > 12.5;
+        let mid = s[0].lerp(s[1], 0.5);
+        let d = s[1] - s[0];
+        if gap > 0 {
+            gap -= 1;
+            continue;
+        }
+        let inside = mid.min_element() > 8.0 && mid.max_element() < sk.size - 8.0;
+        let clear = mid.distance(w.heart) > 13.0
+            && w.pads.iter().all(|p| p.distance(mid) > PADDED + 6.0)
+            && w.cuts
+                .iter()
+                .all(|c| c.0.distance(mid).min(c.1.distance(mid)) > half + 8.0)
+            && sk.lots.iter().all(|l| l.at().distance(mid) > 4.4);
+        // (Cars straddling a bend would stick out of it.)
+        let straight = track.get(k + 2).is_none_or(|n| {
+            (*n - s[1])
+                .normalize_or(Vec2::X)
+                .dot(d.normalize_or(Vec2::X))
+                > 0.96
+        });
+        if wide && inside && clear && straight {
+            let b = OBox {
+                center: mid,
+                yaw: d.x.atan2(d.y),
+                half: Vec2::new(1.55, d.length() * 0.5 - 0.2),
+                ..OBox::default()
+            };
+            sk.lots.push(lot(b, Part::Flat));
+            if rng.chance(0.35) {
+                gap = rng.int(1, 4);
+            }
+        } else {
+            gap = 1;
+        }
+    }
+}
+
+/// Every square of the lattice that isn't open, stacked; squares alike
+/// gathered into oblongs.
+fn blocks(sk: &mut Skeleton, w: &Window) {
+    let n = ((SIZE * 0.5 + BEYOND) * 1.5 / CUBE) as i32;
+    // The lattice runs with the trunk.
+    let (ax, yaw) = (w.turn, -w.turn.y.atan2(w.turn.x));
+    let az = ax.perp();
+    let at = |i: f32, j: f32| w.heart + (ax * i + az * j) * CUBE;
+    let side = (2 * n) as usize;
+    let mut left: Vec<Option<(u8, bool, bool)>> = vec![None; side * side];
+    for i in 0..side {
+        for j in 0..side {
+            let p = at(i as f32 - n as f32 + 0.5, j as f32 - n as f32 + 0.5);
+            let out = (-p).max(p - Vec2::splat(SIZE)).max_element();
+            if out > BEYOND {
                 continue;
             }
-            match rng.f32() {
-                x if x < 0.66 => {
-                    let half = Part::Stack.half(rng).x;
-                    put(sk, grid.set(u, v, Vec2::splat(half)), Part::Stack);
+            let high = w.courses(p);
+            let far = out > 12.0;
+            left[i * side + j] = match w.open(p) {
+                Some(false) => None,
+                Some(true) if high >= 3 => Some((high, true, far)),
+                Some(true) => None,
+                None if high > 0 => Some((high, false, far)),
+                None => None,
+            };
+        }
+    }
+    const LONG: usize = 8;
+    for i in 0..side {
+        for j in 0..side {
+            let Some(kind) = left[i * side + j] else {
+                continue;
+            };
+            let is = |i: usize, j: usize| i < side && j < side && left[i * side + j] == Some(kind);
+            let dj = (0..LONG).take_while(|&d| is(i, j + d)).count();
+            let di = (0..LONG)
+                .take_while(|&d| (0..dj).all(|e| is(i + d, j + e)))
+                .count();
+            for a in i..i + di {
+                for b in j..j + dj {
+                    left[a * side + b] = None;
                 }
-                x if x < 0.76 => {
-                    let half = Part::Monolith.half(rng).x;
-                    put(sk, grid.set(u, v, Vec2::splat(half)), Part::Monolith);
-                }
-                // Two small ones corner to corner, a way through between.
-                x if x < 0.92 => {
-                    let e = if rng.chance(0.5) { 1.0 } else { -1.0 };
-                    for s in [-1.0f32, 1.0] {
-                        let b = grid.set(u + s * 3.4, v + s * e * 3.4, Vec2::splat(2.2));
-                        put_pair(sk, b);
-                    }
-                }
-                _ => {}
             }
+            let mid = |k: usize, d: usize| k as f32 - n as f32 + d as f32 * 0.5;
+            let (high, roofed, far) = kind;
+            let b = OBox {
+                center: at(mid(i, di), mid(j, dj)),
+                yaw,
+                half: Vec2::new(di as f32, dj as f32) * CUBE * 0.5,
+                ..OBox::default()
+            };
+            sk.lots.push(lot(b, Part::Block { high, roofed, far }));
         }
     }
 }
 
-/// One of a pair of small stacks: as close to the other as it's set.
-fn put_pair(sk: &mut Skeleton, b: OBox) {
-    if room(sk, &b, 1.0) && off_roads(sk, &b, 0.3) {
-        sk.lots.push(lot(b, Part::Stack));
-    }
-}
-
-/// Gantries over the lanes, between one crossing and the next.
-fn gantries(sk: &mut Skeleton, rng: &mut Rng, grid: &Grid) {
-    let mut want = rng.int(4, 6);
-    for _ in 0..80 {
-        if want == 0 {
-            break;
-        }
-        let cell = |rng: &mut Rng| rng.int(-grid.n, grid.n - 1) as f32 + 0.5;
-        let line = rng.int(1, grid.n - 1) as f32 * if rng.chance(0.5) { 1.0 } else { -1.0 };
-        let (across, along) = (line * grid.pitch, cell(rng) * grid.pitch);
-        let half = Vec2::new(5.4, 3.0);
-        let mut b = grid.set(across, along, half);
-        // (`set`'s long way is the grid's along.)
-        b.yaw += std::f32::consts::FRAC_PI_2;
-        if rng.chance(0.5) {
-            b = grid.set(along, across, half);
-        }
-        let (ax, az) = b.axes();
-        let legs = [-1.0f32, 1.0].into_iter().flat_map(|x| {
-            [-1.0f32, 1.0].map(|z| b.center + ax * x * (half.x - 0.7) + az * z * (half.y - 0.7))
+/// The loaders at work where the hoard's growing: the nearest to the
+/// heart over it.
+fn loaders(sk: &mut Skeleton, w: &Window, rng: &mut Rng) {
+    let mut put: Vec<Vec2> = Vec::new();
+    for t in 0..400 {
+        let p = match t {
+            0 => w.heart,
+            _ => Vec2::new(rng.range(30.0, SIZE - 30.0), rng.range(30.0, SIZE - 30.0)),
+        };
+        let edge = t == 0 || (0.12..0.4).contains(&w.built(p));
+        let half = Part::Loader.half(rng);
+        let b = OBox {
+            center: p,
+            yaw: -w.turn.y.atan2(w.turn.x) + if rng.chance(0.5) { PI * 0.5 } else { 0.0 },
+            half,
+            ..OBox::default()
+        };
+        let legs = b.corners().into_iter().all(|c| {
+            sk.lots.iter().all(|l| l.footprint.distance(c) > 2.0)
+                && sk
+                    .tracks
+                    .iter()
+                    .all(|l| l.windows(2).all(|s| seg(c, s[0], s[1]).0 > 3.0))
         });
-        let clear = legs.into_iter().all(|p| {
-            sk.streets.iter().all(|s| s.distance(p) > s.half + 0.1)
-                && sk.lots.iter().all(|l| l.footprint.distance(p) > 0.8)
-        });
-        let apart = sk
-            .lots
-            .iter()
-            .filter(|l| l.kind == LotKind::Works(Part::Gantry))
-            .all(|l| l.at().distance(b.center) > 34.0);
-        let inside = b.center.min_element() > 16.0
-            && b.center.max_element() < sk.size - 16.0
-            && b.distance(sk.heart) > FLOOR
-            && sk.bases.iter().all(|s| b.distance(s.middle()) > PAD + 3.0);
-        if clear && apart && inside {
-            sk.lots.push(lot(b, Part::Gantry));
-            want -= 1;
-        }
-    }
-}
-
-/// Sheds, offices and walls out on the land round the grid, square to it.
-fn outside(sk: &mut Skeleton, rng: &mut Rng, grid: &Grid) {
-    for _ in 0..500 {
-        let p = Vec2::new(
-            rng.range(14.0, sk.size - 14.0),
-            rng.range(14.0, sk.size - 14.0),
-        );
-        let q = p - grid.mid;
-        let q = Vec2::new(q.dot(grid.along), q.dot(grid.along.perp()));
-        let part = [
-            Part::Shed,
-            Part::Shed,
-            Part::Office,
-            Part::Bunker,
-            Part::Wall,
-            Part::Crane,
-            Part::Stack,
-        ][rng.index(7)];
-        let mut half = part.half(rng);
-        if part == Part::Stack {
-            half = Vec2::splat(half.x);
-        }
-        let b = grid.set(q.x, q.y, half);
-        let bare = sk.lots.iter().all(|l| l.footprint.distance(p) > 13.0);
-        if bare && q.length() > grid.reach() && room(sk, &b, 5.0) && off_roads(sk, &b, 0.8) {
-            sk.lots.push(lot(b, part));
-        }
-    }
-}
-
-/// Cubes not stacked yet, wherever there's nothing to hide behind: square to
-/// the grid, as everything is.
-fn strays(sk: &mut Skeleton, rng: &mut Rng, grid: &Grid) {
-    for _ in 0..1600 {
-        let p = Vec2::new(
-            rng.range(10.0, sk.size - 10.0),
-            rng.range(10.0, sk.size - 10.0),
-        );
-        let q = p - grid.mid;
-        let half = Part::Cube.half(rng).x;
-        let (u, v) = (q.dot(grid.along), q.dot(grid.along.perp()));
-        let b = grid.set(u, v, Vec2::splat(half));
-        let bare = sk.lots.iter().all(|l| l.footprint.distance(p) > 11.0);
-        if bare && room(sk, &b, 5.0) && off_roads(sk, &b, 0.4) {
-            sk.lots.push(lot(b, Part::Cube));
+        let apart = put.iter().all(|q| q.distance(p) > 62.0)
+            && w.pads.iter().all(|q| q.distance(p) > PADDED + 20.0);
+        if edge && legs && apart && put.len() < 4 {
+            put.push(p);
+            sk.lots.push(lot(b, Part::Loader));
         }
     }
 }

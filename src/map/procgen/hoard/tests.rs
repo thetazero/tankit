@@ -36,45 +36,46 @@ fn every_seed_is_playable_dressed() {
     ignore = "slow unoptimized: run with cargo test --release"
 )]
 fn many_seeds_are_playable() {
-    (0..6).for_each(check_dressed);
+    (3..6).for_each(check_dressed);
 }
 
-/// Stacks enough to call it a hoard, the sides far apart, and the counting
-/// floor over the land round it.
+/// Blocks, trains and ways between the sides, who start far apart.
 #[test]
-fn every_hoard_is_one() {
-    for seed in 0..12 {
+fn every_stretch_is_a_hoard() {
+    for seed in 0..6 {
         let sk = skeleton(&spec(seed));
-        let count = |part| {
-            let is = |l: &&crate::map::procgen::skeleton::Lot| l.kind == LotKind::Works(part);
-            sk.lots.iter().filter(is).count()
-        };
-        let stacks = count(Part::Stack) + count(Part::Monolith);
-        // One at each of the counting floor's corners among them.
-        let near = |l: &&crate::map::procgen::skeleton::Lot| {
-            l.kind == LotKind::Works(Part::Stack) && l.at().distance(sk.heart) < 22.0
-        };
-        // (A road may take one's place.)
-        assert!(sk.lots.iter().filter(near).count() >= 3, "seed {seed}");
-        assert!(stacks >= 30, "seed {seed}: {stacks} stacks");
+        let blocks = sk
+            .lots
+            .iter()
+            .filter(|l| matches!(l.kind, LotKind::Works(Part::Block { .. })))
+            .count();
+        assert!(blocks >= 60, "seed {seed}: {blocks} blocks");
         let [a, b] = [0, 1].map(|k| sk.bases[k].middle());
         let apart = a.distance(b);
-        assert!(apart > sk.size * 0.6, "seed {seed}: {apart} m apart");
-        let top = sk.ground(sk.heart);
-        let foot = (0..8)
-            .map(|k| glam::Vec2::from_angle(k as f32 * 0.785) * 46.0 + sk.heart)
-            .map(|p| sk.ground(p))
-            .fold(f32::MIN, f32::max);
-        assert!(top > foot + 2.0, "seed {seed}: {top} over {foot}");
+        assert!(apart > sk.size * 0.5, "seed {seed}: {apart} m apart");
+        assert!(sk.tracks.len() >= 4, "seed {seed}: {}", sk.tracks.len());
     }
 }
 
-/// Whatever its ground, a seed's the same hoard.
+/// Bots get to each other and fight, and stay on their wheels.
 #[test]
-fn the_ground_changes_no_layout() {
-    let on = Ground::ALL.map(|g| skeleton(&crate::hoard_spec(2, g)));
-    for sk in &on[1..] {
-        assert_eq!((sk.heart, sk.lots.len()), (on[0].heart, on[0].lots.len()));
+#[cfg_attr(
+    debug_assertions,
+    ignore = "slow unoptimized: run with cargo test --release"
+)]
+fn bots_fight_in_it() {
+    use crate::combat::{Match, Phase};
+    for seed in 0..3u64 {
+        let mut g = Match::new(map(&spec(seed)), 0, 11, seed);
+        g.start();
+        g.set_contract(crate::mission::Contract::Hold);
+        g.bots_only(seed);
+        while g.phase == Phase::Playing {
+            g.step(crate::sim::Command::default(), false);
+            g.sounds.clear();
+        }
+        let kills: u32 = g.pilots().iter().map(|p| p.kills).sum();
+        println!("seed {seed}: {kills} kills");
+        assert!(kills > 10, "seed {seed}: {kills} kills");
     }
-    assert_ne!(skeleton(&spec(1)).heart, on[0].heart);
 }

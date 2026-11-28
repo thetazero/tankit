@@ -26,7 +26,7 @@ use super::{Look, Spec};
 use crate::map::Map;
 use crate::rng::Rng;
 pub use ground::Ground;
-pub use parts::{Part, build as build_part};
+pub use parts::{CUBE, Part, build as build_part};
 use style::Works;
 
 pub(super) fn works(look: Look) -> &'static dyn Works {

@@ -56,12 +56,17 @@ pub enum Part {
     Pot,
     Rubble,
     // A hoard's.
-    /// Tungsten cubes stacked on a square, some of it higher.
-    Stack,
-    /// One great cube.
-    Monolith,
-    /// A cube on its own.
-    Cube,
+    /// Tungsten cubes packed solid, `high` courses of them; `roofed`, a way
+    /// left through under the rest; `far`, only ever seen from afar.
+    Block {
+        high: u8,
+        roofed: bool,
+        far: bool,
+    },
+    /// A flat car with cubes on it.
+    Flat,
+    /// A great portal crane, lifting cubes off trains into their places.
+    Loader,
 }
 
 impl Part {
@@ -115,6 +120,9 @@ impl Part {
                 | Part::Wagons
                 | Part::Cars
                 | Part::Gantry
+                | Part::Block { .. }
+                | Part::Flat
+                | Part::Loader
         )
     }
 
@@ -147,9 +155,9 @@ impl Part {
             Part::Billets => ((1.4, 2.0), (2.4, 3.2)),
             Part::Pot => ((1.7, 1.7), (1.7, 1.7)),
             Part::Rubble => ((1.5, 2.4), (1.8, 3.0)),
-            Part::Stack => ((4.8, 5.8), (4.8, 5.8)),
-            Part::Monolith => ((5.0, 5.8), (5.0, 5.8)),
-            Part::Cube => ((1.0, 1.7), (1.0, 1.7)),
+            Part::Block { .. } => ((CUBE * 0.5, CUBE * 0.5), (CUBE * 0.5, CUBE * 0.5)),
+            Part::Flat => ((1.55, 1.55), (4.8, 4.8)),
+            Part::Loader => ((15.0, 18.0), (7.0, 8.0)),
         };
         Vec2::new(rng.range(w.0, w.1), rng.range(l.0, l.1))
     }
@@ -172,6 +180,9 @@ impl Part {
         }
     }
 }
+
+/// A hoard's cube, on a side.
+pub const CUBE: f32 = 6.0;
 
 /// What a piece is, for its colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1143,53 +1154,134 @@ pub fn build(map: &mut Map, f: &OBox, part: Part, g: f32, st: Option<&dyn Works>
             s.put(0.0, 0.0, (w, l), (-0.6, 1.4)).tilt = 0.08;
             s.put(w * 0.4, 0.3, (w * 0.5, l * 0.5), (0.2, 2.2)).tilt = -0.2;
         }
-        Part::Stack => {
-            let n = (w / 1.75).round().max(1.0) as i32;
-            let a = 2.0 * w / n as f32;
-            let tallest = s.rng.int(2, 3);
-            for i in 0..n {
-                for j in 0..n {
-                    let at = |k: i32| -w + a * (k as f32 + 0.5);
-                    let inner = (1..n - 1).contains(&i) && (1..n - 1).contains(&j);
-                    let high = match inner {
-                        true => tallest + 1,
-                        false => s.rng.int(1, tallest),
-                    };
-                    for k in 0..high {
-                        s.cube(at(i), at(j), a, k as f32 * a);
-                    }
+        Part::Block { high, roofed, far } => s.block(high as i32, roofed, far),
+        Part::Flat => {
+            let hide = s.st.is_some();
+            s.put(0.0, 0.0, (w, l), (-0.4, 1.25)).hidden = hide;
+            if let Some(p) = &s.pal {
+                let (paint, dark) = (p.wagon, p.dark);
+                s.deck(0.0, 0.0, (w, l), (0.85, 1.25), paint, Material::Painted);
+                s.bogies(0.0, w, l, dark);
+            }
+            let a = 2.6;
+            for e in [-1.0f32, 0.0, 1.0] {
+                if s.rng.chance(0.8) {
+                    s.cube(0.0, e * 3.0, a, 1.25);
                 }
             }
         }
-        Part::Monolith => {
-            s.cube(0.0, 0.0, w * 2.0, 0.0);
-            let p = s.at(0.0, w, 0.0);
-            s.map.sound(Ambient::Machine, p);
+        Part::Loader => {
+            let h = 33.0;
+            s.legs((w, l), 1.0, h);
+            s.role = Role::Trim;
+            for e in [-1.0f32, 1.0] {
+                s.put(0.0, e * l, (w + 8.0, 1.1), (h, h + 2.6));
+            }
+            let x = s.rng.range(-0.5, 0.5) * w;
+            s.role = Role::Steel;
+            s.put(x, 0.0, (3.0, l + 1.0), (h + 2.6, h + 4.6));
+            // The cube it's bringing, hung well over anything driving by.
+            let y = s.rng.range(12.0, 20.0);
+            s.cube(x, 0.0, CUBE, y);
+            if let Some(p) = &s.pal {
+                let (c, m) = (p.steel, p.steel_mat);
+                for (i, j) in [(-1.0f32, -1.0f32), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                    let (dx, z) = (x + i * 2.2, j * 2.2);
+                    s.beam((dx, y + CUBE - 0.1, z), (dx, h + 2.8, z), 0.09, c, m);
+                }
+                s.light((x, y - 1.0, 0.0), molten * 2.0, 26.0);
+            }
         }
-        Part::Cube => s.cube(0.0, 0.0, w * 2.0, 0.0),
     }
 }
 
 impl Site<'_> {
     /// A tungsten cube `a` on a side standing on `y`, a hair's gap all round
-    /// it. Dressed, some have a lit seam round them.
+    /// it. Dressed, a few have a lit seam round them.
     fn cube(&mut self, x: f32, z: f32, a: f32, y: f32) {
         self.role = Role::Cast;
         let h = a * 0.5 - 0.03;
-        // (The bottom one's sunk into uneven ground.)
-        let foot = if y == 0.0 { -0.5 } else { y };
-        self.put(x, z, (h, h), (foot, y + a - 0.06));
+        self.put(x, z, (h, h), (y, y + a - 0.06));
         let Some(p) = &self.pal else { return };
-        let (dark, glow) = (p.dark, p.molten);
-        let lit = self.dice.chance(0.14) || a > 8.0;
-        if lit || self.dice.chance(0.3) {
-            let (c, m) = match lit {
-                true => (glow, Material::Glow),
-                false => (dark, Material::Metal),
-            };
+        let glow = p.molten;
+        if self.dice.chance(0.2) {
             let t = (a * 0.02).max(0.05);
             let mid = y + a * 0.5;
-            self.deck(x, z, (h + 0.02, h + 0.02), (mid - t, mid + t), c, m);
+            let half = (h + 0.02, h + 0.02);
+            self.deck(x, z, half, (mid - t, mid + t), glow, Material::Glow);
+        }
+    }
+
+    /// A block of cubes filling the site: one solid, dark seams between the
+    /// cubes (none, `far` off).
+    fn block(&mut self, high: i32, roofed: bool, far: bool) {
+        // Laid level, courses running on from one block to the next.
+        // (The lowest cubes are bedded down to whatever ground's there.)
+        self.g = (self.g / CUBE - 0.15).ceil() * CUBE + 0.01;
+        self.role = Role::Cast;
+        let (w, l) = (self.f.half.x, self.f.half.y);
+        let first = if roofed { 1 } else { 0 };
+        let foot = if roofed { CUBE } else { -2.0 * CUBE };
+        let top = high as f32 * CUBE;
+        self.put(0.0, 0.0, (w - 0.04, l - 0.04), (foot, top));
+        // (Seams are too fine to see that far off.)
+        if far {
+            return;
+        }
+        let Some(p) = &self.pal else { return };
+        let (dark, glow) = (p.dark * 0.4, p.molten);
+        let metal = Material::Metal;
+        for k in first + 1..high {
+            let y = k as f32 * CUBE;
+            let half = (w + 0.065, l + 0.065);
+            self.deck(0.0, 0.0, half, (y - 0.045, y + 0.045), dark, metal);
+        }
+        let (nx, nz) = (
+            (w * 2.0 / CUBE).round() as i32,
+            (l * 2.0 / CUBE).round() as i32,
+        );
+        let up = (foot + 0.02, top + 0.085);
+        for i in 1..=nx {
+            // (The last is just inside its face, not over it.)
+            let x = (-w + CUBE * i as f32).min(w - 0.16);
+            self.deck(x, 0.0, (0.06, l + 0.1), up, dark, metal);
+        }
+        for j in 1..=nz {
+            let z = (-l + CUBE * j as f32).min(l - 0.16);
+            self.deck(
+                0.0,
+                z,
+                (w + 0.12, 0.06),
+                (up.0 + 0.02, up.1 + 0.02),
+                dark,
+                metal,
+            );
+        }
+        let h = CUBE * 0.5 - 0.12;
+        for i in 0..nx {
+            for j in 0..nz {
+                let side = i == 0 || j == 0 || i == nx - 1 || j == nz - 1;
+                let x = -w + CUBE * (i as f32 + 0.5);
+                let z = -l + CUBE * (j as f32 + 0.5);
+                // Counted from the gallery under it.
+                if roofed && (i + j) % 2 == 0 {
+                    let y = (CUBE - 0.08, CUBE + 0.06);
+                    self.deck(x, z, (1.6, 0.08), y, glow, Material::Glow);
+                }
+                // One that's lately been checked: a seam lit on its outer face.
+                if side && !roofed && self.dice.chance(0.07) {
+                    let y = self.dice.int(0, high.min(3) - 1) as f32 * CUBE + CUBE * 0.5;
+                    let y = (y - 0.07, y + 0.07);
+                    let (a, b) = if i == 0 || i == nx - 1 {
+                        let x = if i == 0 { -w } else { w };
+                        ((x, z), (0.16, h))
+                    } else {
+                        let z = if j == 0 { -l } else { l };
+                        ((x, z), (h, 0.16))
+                    };
+                    self.deck(a.0, a.1, b, y, glow, Material::Glow);
+                }
+            }
         }
     }
 
