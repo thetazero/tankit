@@ -1567,7 +1567,7 @@ impl Galaxy {
                 let gain = fc.share * worth - fc.lost * realm.hull_worth - base;
                 let net = gain * self.hire_trust[defend as usize] - price;
                 // A smart realm wants a good deal, that it can pay for.
-                let dear = realm.arm == super::realm::Arm::Smart
+                let dear = realm.arm.plans()
                     && (net < super::smart::BARGAIN * price
                         || owed + price > super::smart::AT_MOST * realm.crystals.max(0.0));
                 if net <= 0.0 || dear {

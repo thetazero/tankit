@@ -34,6 +34,39 @@ impl Galaxy {
         &self.stashes[a..a + self.systems[s].planets as usize]
     }
 
+    /// The cubes the Uthenn would have with all of system `s` that they
+    /// haven't without: those there, and those they'd make in `ticks`. (A
+    /// planet's cubes go with its vault, with the whole planet.)
+    pub(crate) fn cubes_to_win(&self, s: usize, ticks: f32) -> f32 {
+        let uthenn = Faction::Uthenn.index();
+        let makes = self.makes_cubes(s);
+        let a = self.vault_at[s] as usize;
+        (0..self.systems[s].planets as usize)
+            .map(|p| {
+                let mut cubes = 0.0;
+                if self.vaults[a + p].side as usize != uthenn {
+                    cubes += self.stashes[a + p].cubes as f32;
+                }
+                if !makes[p] {
+                    cubes += self.rules.cubes * self.riches[a + p].tungsten * ticks;
+                }
+                cubes
+            })
+            .sum()
+    }
+
+    /// Which of system `s`'s planets make cubes: those with no production
+    /// site that isn't the Uthenn's.
+    fn makes_cubes(&self, s: usize) -> [bool; 4] {
+        let uthenn = Faction::Uthenn.index();
+        let sys = &self.systems[s];
+        let mut kept = [true; 4];
+        for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
+            kept[site.planet as usize] &= !site.kind.produces() || site.owner as usize == uthenn;
+        }
+        kept
+    }
+
     /// Uthenn planets turn out their cubes.
     pub(crate) fn make_cubes(&mut self) {
         let uthenn = Faction::Uthenn.index();
@@ -41,12 +74,7 @@ impl Galaxy {
             if sys.held[uthenn] == 0 {
                 continue;
             }
-            // Planets with a production site that's someone else's.
-            let mut kept = [true; 4];
-            for site in &self.sites[sys.sites.0 as usize..sys.sites.1 as usize] {
-                kept[site.planet as usize] &=
-                    !site.kind.produces() || site.owner as usize == uthenn;
-            }
+            let kept = self.makes_cubes(s);
             let a = self.vault_at[s] as usize;
             for p in (0..sys.planets as usize).filter(|&p| kept[p]) {
                 let stash = &mut self.stashes[a + p];

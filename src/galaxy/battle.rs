@@ -1347,7 +1347,14 @@ mod gear_tests {
             k.field as f32 / g.systems[k.target as usize].hulls[k.side as usize].max(1) as f32
         };
         (0..g.companies.len())
-            .filter(|&c| g.companies[c].contract.is_some_and(|k| k.field >= 8))
+            .filter(|&c| {
+                let co = &g.companies[c];
+                co.pilots.len() >= 4
+                    && co.contract.is_some_and(|k| {
+                        let (s, f) = (k.target as usize, k.side as usize);
+                        f != crate::galaxy::RAID && k.field >= 8 && g.fighting(s, f)
+                    })
+            })
             .max_by(|&a, &b| share(a).total_cmp(&share(b)))
             .expect("a company under contract")
     }
@@ -1363,6 +1370,8 @@ mod gear_tests {
         let (t, f) = (k.target as usize, k.side as usize);
         g.crew = Some(g.companies[c].id);
         g.stay_on();
+        // (few of the realm's own pilots, so the company fills its seats)
+        g.realms[k.realm as usize].pilots = 2;
         let enemy = (0..SIDES)
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])
@@ -1426,6 +1435,8 @@ mod gear_tests {
         let (t, f) = (k.target as usize, k.side as usize);
         g.crew = Some(g.companies[c].id);
         g.stay_on();
+        // (few of the realm's own pilots, so the company fills its seats)
+        g.realms[k.realm as usize].pilots = 2;
         let enemy = (0..SIDES)
             .filter(|&e| e != f)
             .max_by_key(|&a| g.systems[t].hulls[a])
