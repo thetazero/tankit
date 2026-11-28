@@ -459,8 +459,11 @@ impl Sand<'_> {
             && sk.land.plateau(p).abs() > FOOT + 5.0 + r
             && sk.houses().all(|h| h.footprint.distance(p) > r)
             && !self.map.oboxes.iter().any(|o| {
+                if !o.within(p, r) {
+                    return false;
+                }
                 let (lo, hi) = o.y_range();
-                hi > g + 0.2 && lo < g + 5.0 && o.distance(p) < r
+                hi > g + 0.2 && lo < g + 5.0
             })
     }
 

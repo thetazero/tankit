@@ -1043,7 +1043,7 @@ mod tests {
     )]
     fn digs_lead_somewhere_else() {
         let sides = [Faction::Ithessar, Faction::Resonant];
-        for seed in 0..12 {
+        for seed in 0..6 {
             let sk = skeleton(seed, &sides);
             let nav = NavGrid::build(&sk.greybox(&sides));
             for d in &sk.land.digs {

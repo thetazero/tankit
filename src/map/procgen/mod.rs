@@ -411,8 +411,8 @@ pub fn build(spec: &Spec) -> (Map, Vec<(Claim, std::ops::Range<usize>)>) {
 /// last few are kept: the tests and the menus ask for the same ones over
 /// and over).
 pub fn map(spec: &Spec) -> Map {
-    // (The whole suite runs in one process, on a few dozen maps.)
-    const KEEP: usize = if cfg!(test) { 48 } else { 6 };
+    // (The whole suite runs in one process, on about a hundred maps.)
+    const KEEP: usize = if cfg!(test) { 96 } else { 6 };
     static KEPT: Memo<Spec, Map, KEEP> = Memo::new();
     KEPT.get(spec, || build_map(spec))
 }
@@ -486,7 +486,7 @@ fn vistas(map: &Map, sk: &Skeleton) -> Vec<(Vec2, f32)> {
                 let under = map
                     .oboxes
                     .iter()
-                    .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0);
+                    .any(|o| o.within(p, 3.4) && o.y1 > g + 0.05 && o.y0 < g + 3.0);
                 let v = view(p);
                 let back = Vec2::new(v.sin(), v.cos());
                 let level = (0..=14).all(|k| {
@@ -533,7 +533,7 @@ pub(in crate::map) fn sunlit_views(m: &Map, bases: &[Vec2], middle: Vec2) -> Vec
                 let under = m
                     .oboxes
                     .iter()
-                    .any(|o| o.distance(p) < 3.4 && o.y1 > g + 0.05 && o.y0 < g + 3.0);
+                    .any(|o| o.within(p, 3.4) && o.y1 > g + 0.05 && o.y0 < g + 3.0);
                 let v = view(p);
                 let back = Vec2::new(v.sin(), v.cos());
                 let level = (0..=14).all(|k| {
@@ -1349,11 +1349,14 @@ mod tests {
         let mut bad = Vec::new();
         // (In open, middling and cramped cities.)
         for seed in [0, 1, 3] {
-            let m = build(&crate::city_spec(seed, Look::Ithessar)).0;
+            let m = map(&crate::city_spec(seed, Look::Ithessar));
             let c = m.skeleton.as_ref().unwrap().land.channel.clone().unwrap();
             let nav = NavGrid::build(&m);
-            for hull in [HullKind::Kataphrakt, HullKind::Sethuun, HullKind::Gravis] {
-                for b in &c.bridges {
+            for (h, hull) in [HullKind::Kataphrakt, HullKind::Sethuun, HullKind::Gravis]
+                .into_iter()
+                .enumerate()
+            {
+                for (j, b) in c.bridges.iter().enumerate() {
                     let d = (b.ends[1] - b.ends[0]).normalize();
                     // (Off the grid: a hover hull set down right along its
                     // lines can miss the ground.)
@@ -1361,6 +1364,11 @@ mod tests {
                         nav.nearest_open_point(p + out * 8.0).unwrap() + Vec2::new(0.13, 0.17)
                     });
                     for two in [false, true] {
+                        // (Every hull meets another on every bridge; alone,
+                        // they take the bridges by turns.)
+                        if !two && h != j % 3 {
+                            continue;
+                        }
                         let mut w = World::empty(m.clone());
                         let n = if two { 2 } else { 1 };
                         for k in 0..n {

@@ -1,4 +1,4 @@
-//! What a map's fought in: the time of day, and the weather. A layer over
+//! What a map's fought in: the time of day, the weather, and the stars in its sky. A layer over
 //! any map: the map is built as ever, with its own sky (its day), and the
 //! conditions then make that sky over (`Conditions::apply`). Nothing on the
 //! map moves, so its layout, cover and vistas are the same in any of them.
@@ -7,6 +7,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::companions::{self, Companions};
 use crate::map::Map;
 use crate::render::{Atmosphere, HIDDEN};
 use crate::rng::Rng;
@@ -81,6 +82,8 @@ pub struct Conditions {
     /// How bright the system's star is, 1 the galaxy's average
     /// (`galaxy::System::starlight`).
     pub starlight: f32,
+    /// The companions of its system's star.
+    pub companions: Companions,
 }
 
 impl Default for Conditions {
@@ -89,6 +92,7 @@ impl Default for Conditions {
             time: TimeOfDay::Day,
             weather: Weather::Clear,
             starlight: 1.0,
+            companions: Companions::default(),
         }
     }
 }
@@ -114,6 +118,7 @@ impl Conditions {
             time,
             weather,
             starlight,
+            companions: Companions::default(),
         }
     }
 
@@ -133,6 +138,8 @@ impl Conditions {
             Weather::Clear => {}
             Weather::Sandstorm => storm(&mut map.atmosphere),
         }
+        let night = self.time == TimeOfDay::Night;
+        companions::light_up(&self.companions, night, &mut map.atmosphere);
     }
 }
 
@@ -243,40 +250,46 @@ mod tests {
     #[test]
     fn any_map_has_a_day_a_dusk_and_a_night() {
         let g = Generator::up(Faction::Imperium);
-        for kind in [
-            MapKind::Reservoir,
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Sanctum(crate::map::procgen::foundry::Ground::Grassland),
-            MapKind::Foundry(
-                crate::map::procgen::Look::Imperium,
-                crate::map::procgen::foundry::Ground::Desert,
+        // (Maps the z-fighting tests build too: they take seconds each.)
+        use crate::map::procgen::foundry::Ground;
+        let up = Generator::up;
+        for (kind, seed) in [
+            (MapKind::Reservoir, 0),
+            (MapKind::Sanctum(Ground::Desert), 1),
+            (MapKind::Sanctum(Ground::Tundra), 2),
+            (MapKind::Sanctum(Ground::Grassland), 3),
+            (MapKind::Foundry(Look::Imperium, Ground::Desert), 0),
+            (MapKind::City(Look::Imperium, Default::default()), 0),
+            (MapKind::City(Look::Resonant, Default::default()), 0),
+            (MapKind::City(Look::Resonant, Setting::Grassland), 1),
+            (
+                MapKind::ShieldSite(Look::Imperium, Default::default(), g),
+                0,
             ),
-            MapKind::City(Look::Imperium, Default::default()),
-            MapKind::City(Look::Resonant, Default::default()),
-            MapKind::City(Look::Resonant, Setting::Grassland),
-            MapKind::ShieldSite(Look::Imperium, Default::default(), g),
-            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Depot(Look::Imperium, crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Depot(
-                Look::Imperium,
-                crate::map::procgen::foundry::Ground::Grassland,
+            (MapKind::Depot(Look::Imperium, Ground::Desert), 0),
+            (MapKind::Depot(Look::Resonant, Ground::Tundra), 1),
+            (MapKind::Depot(Look::Uthenn, Ground::Grassland), 2),
+            (MapKind::Mine(Look::Imperium, Ground::Desert), 0),
+            (MapKind::Mine(Look::Resonant, Ground::Tundra), 0),
+            (MapKind::Mine(Look::Uthenn, Ground::Grassland), 0),
+            (MapKind::Desert, 3),
+            (
+                MapKind::ShieldSite(Look::Imperium, Setting::Tundra, up(Faction::Uthenn)),
+                0,
             ),
-            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Desert),
-            MapKind::Mine(Look::Ithessar, crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Mine(
-                Look::Ithessar,
-                crate::map::procgen::foundry::Ground::Grassland,
+            (
+                MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
+                1,
             ),
-            MapKind::Hoard(crate::map::procgen::foundry::Ground::Tundra),
-            MapKind::Desert,
-            MapKind::ShieldSite(Look::Imperium, Setting::Tundra, g),
-            MapKind::ShieldSite(Look::Resonant, Setting::Grassland, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Desert, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Tundra, g),
-            MapKind::ShieldCamp(crate::map::procgen::foundry::Ground::Grassland, g),
+            (MapKind::ShieldCamp(Ground::Desert, g), 3),
+            (MapKind::ShieldCamp(Ground::Tundra, g), 0),
+            (
+                MapKind::ShieldCamp(Ground::Grassland, up(Faction::Resonant)),
+                2,
+            ),
+            (MapKind::Hoard(Ground::Tundra), 1),
         ] {
-            let own = make_map(kind, 1);
+            let own = make_map(kind, seed);
             let mut last = (f32::INFINITY, f32::INFINITY);
             for time in TimeOfDay::ALL {
                 let mut m = own.clone();

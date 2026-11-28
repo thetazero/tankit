@@ -188,8 +188,11 @@ fn settle(map: &mut Map, sk: &Skeleton) {
     let clear = |m: &Map, p: Vec2, r: f32| {
         let g = m.ground_height(p.x, p.y);
         !m.oboxes.iter().any(|o| {
+            if !o.within(p, r) {
+                return false;
+            }
             let (lo, hi) = o.y_range();
-            o.solid && lo < g + 3.0 && hi > g + 0.3 && o.distance(p) < r
+            o.solid && lo < g + 3.0 && hi > g + 0.3
         }) && !m.crystals.iter().any(|c| c.solid && c.distance(p) < r)
     };
     for k in 0..map.bases.len() {

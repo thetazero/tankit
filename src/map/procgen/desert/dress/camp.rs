@@ -386,8 +386,11 @@ impl Sand<'_> {
             !sk.land.on_high(q) && sk.land.plateau(q) > FOOT + 8.0 && (self.g(q) - g).abs() < 0.8
         });
         flat && !self.map.oboxes.iter().any(|o| {
+            if !o.within(p, r) {
+                return false;
+            }
             let (lo, hi) = o.y_range();
-            hi > g + 0.1 && lo < g + 4.0 && o.distance(p) < r
+            hi > g + 0.1 && lo < g + 4.0
         })
     }
 

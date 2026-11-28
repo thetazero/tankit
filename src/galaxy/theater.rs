@@ -213,6 +213,8 @@ impl Shown {
 pub struct SiteView {
     /// Index into `Galaxy::sites`.
     pub index: usize,
+    /// Index into `Galaxy::systems`.
+    pub system: usize,
     pub planet: u8,
     /// What kind of world that is.
     pub class: Class,
@@ -579,6 +581,7 @@ impl SiteView {
     pub fn example(shield: bool) -> SiteView {
         SiteView {
             index: 0,
+            system: 0,
             planet: 0,
             class: Class::Desert,
             owner: 0,
@@ -637,10 +640,13 @@ impl SiteView {
         }
     }
 
-    /// The time of day and weather it's fought in, and its star: the site's own, the same
-    /// each time it's fought over, like its map.
+    /// The time of day and weather it's fought in, and its system's stars:
+    /// the site's own, the same each time it's fought over, like its map.
     pub fn conditions(&self) -> Conditions {
-        Conditions::of_site(self.map_seed, self.map_kind().sandy(), self.starlight)
+        Conditions {
+            companions: crate::companions::of_system(self.system),
+            ..Conditions::of_site(self.map_seed, self.map_kind().sandy(), self.starlight)
+        }
     }
 
     /// Who built the place, whoever holds it now: a city's in their style.
@@ -1374,6 +1380,7 @@ impl Galaxy {
                 };
                 SiteView {
                     index: i,
+                    system: s,
                     planet: site.planet,
                     class: world_class,
                     owner,

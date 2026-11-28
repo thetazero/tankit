@@ -48,9 +48,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         timeout-minutes: 3
 
-      # cpal (sound) links against ALSA on Linux.
+      # cpal (sound) links against ALSA on Linux. Only Ubuntu's package lists are
+      # fetched: the runner also lists packages.microsoft.com, which we don't
+      # need, and its refusals failed the whole step (#717).
       - name: Install ALSA headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+        run: |
+          ubuntu=/etc/apt/sources.list.d/ubuntu.sources
+          test -s "$ubuntu"
+          sudo apt-get update -o Acquire::Retries=3 -o Dir::Etc::sourcelist="$ubuntu" -o Dir::Etc::sourceparts=-
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 libasound2-dev
         timeout-minutes: 3
 
       # Compile separately so a slow build and a hung test get distinct limits.
@@ -87,7 +93,11 @@ jobs:
         timeout-minutes: 3
 
       - name: Install ALSA headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+        run: |
+          ubuntu=/etc/apt/sources.list.d/ubuntu.sources
+          test -s "$ubuntu"
+          sudo apt-get update -o Acquire::Retries=3 -o Dir::Etc::sourcelist="$ubuntu" -o Dir::Etc::sourceparts=-
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 libasound2-dev
         timeout-minutes: 3
 
       - name: Build tests (release)
@@ -95,8 +105,9 @@ jobs:
         timeout-minutes: 12
 
       # The time cap: the whole optimized suite, slow tests included, takes
-      # two to two and a half minutes (#613); past this it's a hang or a
-      # regression.
+      # under three minutes (#714); past this it's a hang or a regression.
+      # A test that builds whole maps costs seconds for each: use ones other
+      # tests build (`procgen::map` keeps them), and few seeds.
       - name: Run tests (release)
         run: cargo test --release --locked
         timeout-minutes: 4

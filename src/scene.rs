@@ -840,15 +840,29 @@ mod tests {
     use crate::render::zfight::{Fight, Soup};
 
     /// Where each map's static geometry has coplanar faces that show.
+    /// As `map_fights`, but only of what's round the generator in the middle
+    /// of a city: the rest is `maps_hardly_z_fight`'s city, block for block.
+    fn generator_fights(name: &str, map: &Map) -> Vec<Fight> {
+        let at = map.skeleton.as_ref().unwrap().landmarks[0].center;
+        let mut mesh = map_mesh(map);
+        let near = |i: &u32| {
+            let p = mesh.verts[*i as usize].pos;
+            Vec2::new(p[0], p[2]).distance(at) < 60.0
+        };
+        let kept = mesh.indices.chunks_exact(3).filter(|t| t.iter().any(near));
+        let kept = kept.flatten().copied().collect();
+        mesh.indices = kept;
+        mesh_fights(name, map, &mesh)
+    }
+
     fn map_fights(name: &str, map: &Map) -> Vec<Fight> {
+        mesh_fights(name, map, &map_mesh(map))
+    }
+
+    fn mesh_fights(name: &str, map: &Map, mesh: &MeshData) -> Vec<Fight> {
         let ground = map.clone();
         let mut soup = Soup::map(move |x, z| ground.ground_height(x, z));
-        soup.add(
-            name,
-            &map_mesh(map),
-            Mat4::IDENTITY,
-            Vec4::new(1.0, 1.0, 1.0, 0.0),
-        );
+        soup.add(name, mesh, Mat4::IDENTITY, Vec4::new(1.0, 1.0, 1.0, 0.0));
         soup.fights()
     }
 
@@ -906,14 +920,14 @@ mod tests {
     )]
     fn cities_hardly_z_fight() {
         use crate::faction::Faction;
-        hardly_z_fight([
-            (
-                "resonant city",
-                crate::make_map(
-                    crate::MapKind::City(crate::map::procgen::Look::Resonant, Default::default()),
-                    0,
-                ),
+        hardly_z_fight([(
+            "resonant city",
+            crate::make_map(
+                crate::MapKind::City(crate::map::procgen::Look::Resonant, Default::default()),
+                0,
             ),
+        )]);
+        generators_hardly_z_fight([
             (
                 "shield-site imperium",
                 Map::shield_city(0, Faction::Imperium),
@@ -1107,20 +1121,29 @@ mod tests {
 
     fn hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
         for (name, map) in maps {
-            let fights = map_fights(name, &map);
-            let area: f32 = fights.iter().map(|f| f.area).sum();
-            let report: Vec<String> = fights
-                .iter()
-                .take(10)
-                .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
-                .collect();
-            assert!(
-                area < 0.4 && fights.iter().all(|f| f.area < 0.1),
-                "{name}: {} z-fights, {area:.2} m² in all; the biggest:\n{}",
-                fights.len(),
-                report.join("\n")
-            );
+            assert_hardly(name, map_fights(name, &map));
         }
+    }
+
+    fn generators_hardly_z_fight<const N: usize>(maps: [(&str, Map); N]) {
+        for (name, map) in maps {
+            assert_hardly(name, generator_fights(name, &map));
+        }
+    }
+
+    fn assert_hardly(name: &str, fights: Vec<Fight>) {
+        let area: f32 = fights.iter().map(|f| f.area).sum();
+        let report: Vec<String> = fights
+            .iter()
+            .take(10)
+            .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
+            .collect();
+        assert!(
+            area < 0.4 && fights.iter().all(|f| f.area < 0.1),
+            "{name}: {} z-fights, {area:.2} m² in all; the biggest:\n{}",
+            fights.len(),
+            report.join("\n")
+        );
     }
 
     /// Each side's generator down (#341): wrecked, or halfway back up (one
@@ -1136,19 +1159,7 @@ mod tests {
             let done = if k % 2 == 0 { 0 } else { 2 };
             let name = format!("shield-site {owner:?} {done}/4 repaired");
             let map = Map::shield_city_in(0, owner, Condition::Down { done, of: 4 });
-            let fights = map_fights(&name, &map);
-            let area: f32 = fights.iter().map(|f| f.area).sum();
-            let report: Vec<String> = fights
-                .iter()
-                .take(10)
-                .map(|f| format!("{:.3} m² at {:.2} (faces {:.2?})", f.area, f.at, f.faces))
-                .collect();
-            assert!(
-                area < 0.4 && fights.iter().all(|f| f.area < 0.1),
-                "{name}: {} z-fights, {area:.2} m² in all; the biggest:\n{}",
-                fights.len(),
-                report.join("\n")
-            );
+            assert_hardly(&name, generator_fights(&name, &map));
         }
     }
 

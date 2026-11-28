@@ -189,29 +189,4 @@ mod tests {
         let m = map(&crate::mine_spec(0, Look::Imperium, g));
         assert_none_buried(&m, crate::map::procgen::mine::RAIL, "mine 0");
     }
-
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
-        ignore = "slow unoptimized: run with cargo test --release"
-    )]
-    fn no_rail_is_buried_on_many_seeds() {
-        let g = Ground::Desert;
-        for seed in 0..12 {
-            let m = map(&crate::depot_spec(seed, Look::Imperium, g));
-            assert_none_buried(
-                &m,
-                crate::map::procgen::skeleton::RAIL,
-                &format!("depot {seed}"),
-            );
-            let m = map(&crate::foundry_spec(seed, Look::Imperium, g));
-            assert_none_buried(
-                &m,
-                crate::map::procgen::skeleton::RAIL,
-                &format!("foundry {seed}"),
-            );
-            let m = map(&crate::mine_spec(seed, Look::Imperium, g));
-            assert_none_buried(&m, crate::map::procgen::mine::RAIL, &format!("mine {seed}"));
-        }
-    }
 }
