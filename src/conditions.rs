@@ -287,6 +287,7 @@ mod tests {
                 MapKind::ShieldCamp(Ground::Grassland, up(Faction::Resonant)),
                 2,
             ),
+            (MapKind::Hoard(Ground::Tundra, Default::default()), 1),
         ] {
             let own = make_map(kind, seed);
             let mut last = (f32::INFINITY, f32::INFINITY);

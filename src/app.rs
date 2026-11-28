@@ -1580,16 +1580,16 @@ impl App {
             if let Some(b) = self.battle.take() {
                 let g = self.war.get();
                 let owners = g.owners();
-                let site = b.site.map(|t| g.sites[t]);
+                let site = b.site.map(|t| (g.sites[t], g.site_name(t)));
                 let settled = battle::conclude(g, &b, &self.game);
                 self.tick_summary = Some(g.tick_summary(b.system, b.sides[0], &owners));
                 // What it did to the site it was for, for the debrief.
-                self.hud.debrief = site.map(|site| hud::WarResult {
+                self.hud.debrief = site.map(|(site, name)| hud::WarResult {
                     world: crate::galaxy::theater::planet_name(
                         &crate::galaxy::theater::system_name(b.system),
                         site.planet,
                     ),
-                    site: crate::galaxy::theater::kind_name(site.kind),
+                    site: name,
                     verdict: hud::Verdict::of(site.owner as usize == b.sides[0], settled.taken),
                 });
                 log::info!("{}", battle::describe(&b, &settled));

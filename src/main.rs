@@ -54,16 +54,17 @@ tankit [OPTIONS]
   (no options)            open the main menu (missions, garage)
   any of --seed --map-seed --map --time-of-day --weather --spawn --team-size --contract --employer --hull --turret skips the menu and drops straight into a match
   --seed <n>              match seed: bot brains, spawns, kits (default: random)
-  --map <reservoir|sanctum|city|shield-site|foundry|mine|desert|shield-camp>
+  --map <reservoir|sanctum|city|shield-site|foundry|depot|hoard|mine|desert|shield-camp>
                           the reservoir (a generated desert town round a dam or a well, the default), the Sanctum (a Resonant church
                           on a mesa, the Hold map; generated, map seed 0 the hand-made one: see --ground), the city
                           (a generated city, see --look and --ground), the shield site (the same, a shield
                           generator in place of its great building), a hull foundry
                           (generated: see --look and --ground), a rail depot
-                          (generated: see --look and --ground), or the mine (a generated
+                          (generated: see --look and --ground), a tungsten hoard
+                          (generated, the Uthenn's: see --ground; by its map seed, a front, a fork or the trunk), or the mine (a generated
                           crystal mine: caves, rails and stacked levels; see --look and --ground), the desert (generated open
                           desert) or the shield camp (the same, a shield generator in its landmark's slot; see --ground)
-  --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, mine, desert, shield-camp) builds (default: the --seed)
+  --map-seed <n>          which one a generated map (reservoir, sanctum, city, shield-site, foundry, depot, hoard, mine, desert, shield-camp) builds (default: the --seed)
   --time-of-day <day|dusk|night>  what the map's fought in (default: day, its own sky)
   --weather <clear|sandstorm>  the weather it's fought in (default: clear)
   --system <n>            whose stars are in the sky (some systems have two or three; default: one star); with --screen missions, whose stars and worlds it shows
@@ -77,7 +78,7 @@ tankit [OPTIONS]
                           (with --map city, shield-site, foundry, depot or mine) who built it (default
                           imperium, a mine's ithessar; uthenn and ithessar only have foundries,
                           depots and mines of their own)
-  --ground <desert|tundra|grassland>  (with --map foundry, depot, mine, sanctum, city, shield-site or shield-camp) what kind of world it's on
+  --ground <desert|tundra|grassland>  (with --map foundry, depot, hoard, mine, sanctum, city, shield-site or shield-camp) what kind of world it's on
                           (default desert; a city's, grey built-over land)
   --in-desert             (with --map city or shield-site) the city stands in the desert (as --ground desert)
   --greybox               a generated map's skeleton, as plain boxes, before it's dressed
@@ -331,6 +332,7 @@ impl Args {
             (true, MapKind::Foundry(l, g)) => {
                 map::procgen::greybox(&foundry_spec(self.map_seed, l, g))
             }
+            (true, MapKind::Hoard(g, s)) => map::procgen::greybox(&hoard_spec(self.map_seed, g, s)),
             (true, MapKind::Depot(l, g)) => map::procgen::greybox(&depot_spec(self.map_seed, l, g)),
             (true, MapKind::Desert) => map::procgen::greybox(&desert_spec(self.map_seed)),
             (true, MapKind::Reservoir) => map::procgen::greybox(&reservoir_spec(self.map_seed)),
@@ -377,6 +379,9 @@ pub enum MapKind {
     /// A rail depot, in someone's style on some kind of ground. Generated:
     /// a different one for each map seed.
     Depot(map::procgen::Look, map::procgen::foundry::Ground),
+    /// A stretch of the Uthenn's hoard of tungsten cubes, on some kind of ground.
+    /// Generated: a different one for each map seed.
+    Hoard(map::procgen::foundry::Ground, map::procgen::hoard::Stretch),
     /// A crystal mine in an escarpment, in someone's style on some kind of
     /// ground, on three levels. Generated: a different mine for each map seed.
     Mine(map::procgen::Look, map::procgen::foundry::Ground),
@@ -401,6 +406,7 @@ impl MapKind {
             MapKind::City(_, s) | MapKind::ShieldSite(_, s, _) => s == Setting::Desert,
             MapKind::Foundry(_, g)
             | MapKind::Depot(_, g)
+            | MapKind::Hoard(g, _)
             | MapKind::Mine(_, g)
             | MapKind::ShieldCamp(g, _)
             | MapKind::Sanctum(g) => g == Ground::Desert,
@@ -417,6 +423,7 @@ pub fn make_map(kind: MapKind, seed: u64) -> map::Map {
         MapKind::Foundry(l, g) => map::procgen::map(&foundry_spec(seed, l, g)),
         MapKind::Mine(l, g) => map::procgen::map(&mine_spec(seed, l, g)),
         MapKind::Depot(l, g) => map::procgen::map(&depot_spec(seed, l, g)),
+        MapKind::Hoard(g, s) => map::procgen::map(&hoard_spec(seed, g, s)),
         MapKind::Desert => map::procgen::map(&desert_spec(seed)),
         MapKind::Reservoir => map::procgen::map(&reservoir_spec(seed)),
         MapKind::ShieldCamp(ground, g) => map::procgen::map(&shield_camp_spec(seed, ground, g)),
@@ -516,6 +523,23 @@ pub fn depot_spec(
         biome: map::procgen::Biome::Depot(ground),
         look,
         sides: map::DEFAULT_SIDES.to_vec(),
+        centerpiece: map::procgen::Centerpiece::Monument,
+        setting: Default::default(),
+    }
+}
+
+/// The tungsten hoard `seed` names on `ground`: the Uthenn's, the Ithessar
+/// come for it.
+pub fn hoard_spec(
+    seed: u64,
+    ground: map::procgen::foundry::Ground,
+    stretch: map::procgen::hoard::Stretch,
+) -> map::procgen::Spec {
+    map::procgen::Spec {
+        seed,
+        biome: map::procgen::Biome::Hoard(ground, stretch),
+        look: map::procgen::Look::Uthenn,
+        sides: vec![faction::Faction::Uthenn, faction::Faction::Ithessar],
         centerpiece: map::procgen::Centerpiece::Monument,
         setting: Default::default(),
     }
@@ -862,6 +886,10 @@ fn parse_args() -> Result<Args> {
                         map::procgen::foundry::Ground::Desert,
                     )
                 }
+                Some("hoard") => {
+                    map_kind =
+                        MapKind::Hoard(map::procgen::foundry::Ground::Desert, Default::default())
+                }
                 Some("mine") => {
                     map_kind = MapKind::Mine(
                         map::procgen::Look::Ithessar,
@@ -1174,9 +1202,14 @@ fn parse_args() -> Result<Args> {
         }
     }
     let map_seed = map_seed.unwrap_or(seed);
+    // (A site's goes by the war's count of its cubes.)
+    if let MapKind::Hoard(_, s) = &mut map_kind {
+        *s = map::procgen::hoard::Stretch::ALL[(map_seed % 3) as usize];
+    }
     if let (
         MapKind::Foundry(_, g)
         | MapKind::Depot(_, g)
+        | MapKind::Hoard(g, _)
         | MapKind::Mine(_, g)
         | MapKind::ShieldCamp(g, _)
         | MapKind::Sanctum(g),

@@ -293,6 +293,14 @@ they make is tungsten cubes. How the Ithessar feel about them is unknown;
 **Their foundries** cast hulls from tungsten cubes: pale shell on a dark
 plinth, everything square, a green seam lit along it.
 
+**Their hoards:** where the cubes go. There are too many for one heap: the
+ground wouldn't bear the weight, and hauling it all to one place would be a
+waste. So a hoard covers the land: railways bring the cubes from the world's
+foundries, forking like arteries, and every bit of ground between them is
+packed solid, as high as it bears. Trains run in on the trunks; at the edges
+great loaders are still building outward. Nothing in it is for show. A fight
+is over one stretch of it, and it stays a hoard whoever takes it.
+
 ## Crystals
 
 What everyone fights over: your pay, the Resonant's sacrament, and the reason

@@ -1030,6 +1030,8 @@ impl WarResult {
         let site = match self.site {
             "SHIELD GENERATOR" => "Shield",
             "CRYSTAL MINE" => "Mine",
+            "TUNGSTEN HOARD" => "Hoard",
+            "OUTPOST" => "Outpost",
             _ => "Foundry",
         };
         format!("{site} {}", self.verdict.word())
