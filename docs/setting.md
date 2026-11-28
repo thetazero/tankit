@@ -145,6 +145,24 @@ each: the Imperium against the Resonant on the human side, the Ithessar
 against Uthenn on theirs. Where human and alien space meet, the fronts are
 thinner.
 
+## What they want
+
+Everyone wants to profit: realms, companies and pilots alike. And each people
+wants something of its own, from a different layer of the same worlds. What
+one wants says nothing of what the next does, so they mostly pass each other
+by, until a world has two of them.
+
+- **The Imperium: everything.** Every system, for its own sake. A system is
+  worth having because it isn't the Imperium's yet.
+- **The Resonant: crystal.** Their sacrament. All they can gather, and the
+  great seams before the small.
+- **The Uthenn: tungsten cubes.** To have as many as they can. Their worlds
+  turn tungsten into cubes, and stack them up.
+- **The Ithessar: starlight.** Plasma comes from stars, and crystal holds it.
+  They want bright stars, and the worlds are only where one stands to reach
+  them: in their cities a piece of the sun, drawn down, feeds the rivers.
+  They'll fight like mad over a system of dead rocks.
+
 ## Emblems
 
 Each side has an emblem, drawn in the HUD's hairlines next to its name
