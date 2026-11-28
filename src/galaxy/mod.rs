@@ -86,6 +86,7 @@ pub mod ledger;
 pub mod merc;
 pub mod realm;
 pub mod save;
+pub mod score;
 mod smart;
 pub mod structure;
 pub mod theater;

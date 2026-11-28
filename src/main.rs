@@ -98,6 +98,9 @@ tankit [OPTIONS]
   --galaxy <ticks>        run the galaxy's forever war on its own (from --seed) for that many ticks,
                           print each faction's share and how long a tick takes; with --shot,
                           save a chart of the run there
+  --score <ticks> <seeds> [quick]
+                          how everyone in the war does by what they're after (profit, and
+                          what each people wants), realms by arm; quick runs each galaxy once
   --improve <faction>     (with --arena) that side's bots run the current brain
   --front                 (with --arena or --shot) each round is a battle drawn from a galaxy at war
                           (from --seed; never the one you play in): the sides fight on hull
@@ -1013,6 +1016,18 @@ fn parse_args() -> Result<Args> {
                         .context("--galaxy needs a tick count")?
                         .parse()?,
                 )
+            }
+            "--score" => {
+                // --score <ticks> <seed,seed..> [quick]
+                let ticks = args.next().context("--score needs a tick count")?.parse()?;
+                let seeds: Vec<u64> = args
+                    .next()
+                    .context("--score needs seeds")?
+                    .split(',')
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()?;
+                galaxy::score::run(ticks, &seeds, args.next().as_deref() == Some("quick"));
+                std::process::exit(0);
             }
             "--judge" => {
                 // --judge <ticks> <seed,seed..> [arms|replay]
