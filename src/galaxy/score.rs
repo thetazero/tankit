@@ -45,13 +45,14 @@ fn tally(g: &Galaxy) -> Tally {
         x.realms += 1.0;
         x.income += r.income as f64;
         x.crystal += r.crystals as f64;
-        if Faction::side(r.faction as usize) == Faction::Resonant {
-            x.goal += r.crystals as f64;
-        }
     }
     for d in &g.debts {
         let r = &g.realms[d.realm as usize];
         out[r.faction as usize][r.arm as usize].crystal -= d.crystals as f64;
+    }
+    // What they owe isn't theirs to hold.
+    for x in &mut out[Faction::Resonant.index()] {
+        x.goal = x.crystal;
     }
     for (s, sys) in g.systems.iter().enumerate() {
         let h = g.holder(s);
@@ -248,6 +249,15 @@ mod tests {
         for _ in 0..40 {
             g.step();
         }
+        let owes = (0..g.realms.len())
+            .find(|&r| g.realms[r].faction as usize == Faction::Resonant.index())
+            .unwrap();
+        g.debts.push(crate::galaxy::merc::Debt {
+            realm: owes as u32,
+            company: g.companies[0].id,
+            crystals: 50.0,
+            due: 1.0,
+        });
         let t = tally(&g);
         let of = |f: Faction| t[f.index()].iter().map(|x| x.goal).sum::<f64>();
         let held = |f: Faction| {
@@ -274,7 +284,14 @@ mod tests {
             .filter(|(_, r)| r.faction as usize == Faction::Resonant.index())
             .map(|(_, r)| r.crystals as f64)
             .sum();
-        assert!((of(Faction::Resonant) - crystal).abs() < 1e-3);
+        let owed: f64 = g
+            .debts
+            .iter()
+            .filter(|d| g.realms[d.realm as usize].faction as usize == Faction::Resonant.index())
+            .map(|d| d.crystals as f64)
+            .sum();
+        assert!(owed >= 50.0);
+        assert!((of(Faction::Resonant) - (crystal - owed)).abs() < 1e-3);
         let cubes: u64 = g.stashes.iter().map(|x| x.cubes as u64).sum();
         let theirs = of(Faction::Uthenn);
         assert!(theirs > 0.0 && theirs <= cubes as f64);
