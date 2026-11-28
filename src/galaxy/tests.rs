@@ -436,7 +436,7 @@ fn uthenn_realms_want_cubes() {
     g.stashes[v].cubes = 10_000;
     let some = g.wanted(r as u32, theirs);
     assert!(0.0 < none && none < some);
-    // Not what it'd pay: that's crystal's.
+    // Nor what it would pay to help or hold it: that is crystal's.
     let pays = g.prize(r as u32, theirs, f, false);
     g.realms[r].arm = Arm::Smart;
     assert_eq!(pays, g.prize(r as u32, theirs, f, false));

@@ -14,8 +14,9 @@
 //! than others do and sticking with the neighbor it's begun on.
 //!
 //! **Wants.** Some realms are after what their people want: the Uthenn, as
-//! many tungsten cubes as they can control. Of the attacks worth what they
-//! cost, they're drawn to those that win it.
+//! many tungsten cubes as they can control. They pay for those in attacks,
+//! and are drawn to the ones that win most; and they keep fewer pilots and
+//! less crystal by, for more attacks.
 //!
 //! **Battles.** In a fight it picks the sites worth fighting for: all of them,
 //! shielded or not, with the pilots to fill the seats; else fewer, so its
@@ -36,6 +37,8 @@ use super::{FTL_RANGE, Fleet, Galaxy, MIN_SEND, Rules, SIDES, SiteKind};
 
 /// Share of its income a smart realm's payroll may take for good...
 const PAYROLL: f32 = 0.6;
+/// (less for one after what its people want: the rest goes on conquest.)
+const WANTS_PAYROLL: f32 = 0.35;
 /// ... and the ticks it spreads its savings over, to pay for more.
 const RUNWAY: f32 = 80.0;
 
@@ -43,7 +46,11 @@ impl Realm {
     /// The pilots a smart realm can keep paying.
     pub(crate) fn crew_budget(&self, rules: &Rules) -> u32 {
         let net = self.income.max(0.0) * (1.0 - rules.research);
-        ((PAYROLL * net + self.crystals.max(0.0) / RUNWAY) / self.pay(rules)) as u32
+        let payroll = match self.arm {
+            Arm::Wants => WANTS_PAYROLL,
+            _ => PAYROLL,
+        };
+        ((payroll * net + self.crystals.max(0.0) / RUNWAY) / self.pay(rules)) as u32
     }
 
     /// A smart realm takes pilots on toward its budget, those out of work
@@ -114,8 +121,8 @@ impl Galaxy {
     }
 
     /// What system `t` has that realm `r`'s people want, if it's after that,
-    /// in crystal: what it'd gain with it, held a while. It's what it goes
-    /// for, not what it'll pay for it.
+    /// in crystal: what it'd gain with it, held a while. It pays that much
+    /// more to attack for it, and it's drawn to it.
     pub(crate) fn wanted(&self, r: u32, t: usize) -> f32 {
         if self.realms[r as usize].arm != Arm::Wants {
             return 0.0;
@@ -147,7 +154,7 @@ impl Galaxy {
             if !realm.arm.plans()
                 || realm.faction as usize != f
                 || realm.systems == 0
-                || !(self.tick + r as u64).is_multiple_of(3)
+                || (realm.arm != Arm::Wants && !(self.tick + r as u64).is_multiple_of(3))
             {
                 continue;
             }
@@ -182,7 +189,11 @@ impl Galaxy {
             }
         }
         let idle = pilots - realm.seats_now - out;
-        let fund = realm.crystals - KEEP_BY * pilots * realm.pay(&self.rules);
+        let keep = match realm.arm {
+            Arm::Wants => WANTS_KEEP_BY,
+            _ => KEEP_BY,
+        };
+        let fund = realm.crystals - keep * pilots * realm.pay(&self.rules);
         if idle < self.rules.seats || fund <= 0.0 {
             return (None, Vec::new());
         }
@@ -209,7 +220,10 @@ impl Galaxy {
                 continue;
             }
             let mut prize = self.prize(r, t, f, false);
+            // It'll pay for what it wants, to take it (not to help or hold
+            // it: that, it'd do too dearly).
             let wanted = self.wanted(r, t);
+            prize += wanted;
             prize += LAND;
             if sys.pos.distance(seat) > self.rules.reach {
                 prize *= 0.5;
@@ -354,6 +368,8 @@ pub(crate) const LENDS: f32 = INSTALMENT * CREDIT;
 /// A smart realm keeps this many ticks' payroll by it when it can pay a bill
 /// in instalments.
 const KEEP_BY: f32 = 10.0;
+/// What one after what its people want keeps, launching an attack.
+const WANTS_KEEP_BY: f32 = 3.0;
 /// How a company's margin moves with each contract, and each time it
 /// goes a while without one; and how far.
 pub(crate) const MARGIN_UP: f32 = 1.1;
